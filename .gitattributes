@@ -1,0 +1,11 @@
+#############
+## General ##
+#############
+
+# Normalize line endings in text (LF in the repo; checkout depends on Git, but is consistent).
+* text=auto
+
+# Scripts: enforce correct EOLs for compatibility
+*.sh  text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
