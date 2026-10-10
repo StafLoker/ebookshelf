@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"ebookshelf/internal/dto"
 	apperrors "ebookshelf/internal/errors"
@@ -62,4 +63,31 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 		return apperrors.InvalidRequest("invalid request body")
 	}
 	return nil
+}
+
+func currentUser(r *http.Request) dto.UserResponse {
+	return r.Context().Value(UserKey{}).(dto.UserResponse)
+}
+
+func pathID(r *http.Request) (int64, error) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		return 0, apperrors.InvalidRequest("invalid id")
+	}
+	return id, nil
+}
+
+// an absent key is not an error: it returns 0, meaning no filter
+func queryID(r *http.Request, key string) (int64, error) {
+	var (
+		id  int64
+		err error
+	)
+
+	if value := r.URL.Query().Get(key); value != "" {
+		if id, err = strconv.ParseInt(value, 10, 64); err != nil {
+			err = apperrors.InvalidRequest("invalid " + key + " filter")
+		}
+	}
+	return id, err
 }

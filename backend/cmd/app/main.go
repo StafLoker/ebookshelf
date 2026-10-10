@@ -99,6 +99,7 @@ func main() {
 	c := container.New(db, cfg)
 	switch cmdArgs.rest[0] {
 	case "serve":
+		c.Files.ClearTmp(ctx)
 		if runServer(ctx, cfg, c) != nil {
 			code = 1
 		}

@@ -23,7 +23,6 @@ func TestConfig_Load_Valid(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 7717, cfg.Port)
-	assert.Equal(t, 100, cfg.MaxUploadMB)
 	assert.Equal(t, "DEBUG", cfg.LogLevel)
 	assert.Equal(t, []byte(strings.Repeat("s", 32)), cfg.SecretKey)
 	assert.Equal(t, []byte(strings.Repeat("k", 32)), cfg.EncryptionKey)

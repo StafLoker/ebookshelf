@@ -63,7 +63,7 @@ func noStore(next http.Handler) http.Handler {
 	})
 }
 
-func session(authSvc *service.AuthService) func(http.Handler) http.Handler {
+func requireSession(authSvc *service.AuthService) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var user dto.UserResponse
@@ -87,10 +87,23 @@ func requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user := r.Context().Value(handler.UserKey{}).(dto.UserResponse)
 
-		if user.Role == domain.RoleAdmin || user.Role == domain.RoleRoot {
+		if user.Role.IsStaff() {
 			next.ServeHTTP(w, r)
 		} else {
 			handler.WriteError(w, r, apperrors.Forbidden("admin access required"))
 		}
 	})
+}
+
+func requirePermission(perm domain.Permission) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			u := r.Context().Value(handler.UserKey{}).(dto.UserResponse)
+			if (&domain.User{Role: u.Role, CanUpload: u.CanUpload, CanEdit: u.CanEdit, CanDelete: u.CanDelete}).Allowed(perm) {
+				next.ServeHTTP(w, r)
+			} else {
+				handler.WriteError(w, r, apperrors.Forbidden("permission required: "+string(perm)))
+			}
+		})
+	}
 }

@@ -3,6 +3,114 @@
 package repository
 
 var (
+	bookCreate = `
+INSERT INTO books (title, language, publisher, pub_year, description, format, file_hash, source_hash, status, uploaded_by, created_at)
+VALUES (:title, :language, :publisher, :pub_year, :description, :format, :file_hash, :source_hash, :status, :uploaded_by, :created_at)
+`
+	bookUpsertAuthor = `
+INSERT INTO authors (name) VALUES (?)
+ON CONFLICT (name) DO UPDATE SET name = authors.name
+RETURNING id
+`
+	bookCreateAuthorLink = `
+INSERT OR IGNORE INTO book_authors (book_id, author_id, position) VALUES (?, ?, ?)
+`
+	bookUpsertTag = `
+INSERT INTO tags (name) VALUES (?)
+ON CONFLICT (name) DO UPDATE SET name = tags.name
+RETURNING id
+`
+	bookCreateTagLink = `
+INSERT OR IGNORE INTO book_tags (book_id, tag_id) VALUES (?, ?)
+`
+	bookFindByID = `
+SELECT id, title, language, publisher, pub_year, description, format, file_hash, source_hash, status, uploaded_by, created_at
+FROM books
+WHERE id = ?
+`
+	bookFindByFileHash = `
+SELECT id, title, language, publisher, pub_year, description, format, file_hash, source_hash, status, uploaded_by, created_at
+FROM books
+WHERE file_hash = ?
+`
+	bookCreateIdentifier = `
+INSERT OR IGNORE INTO book_identifiers (book_id, type, value) VALUES (?, ?, ?)
+`
+	bookFindAuthors = `
+SELECT a.name
+FROM book_authors ba
+JOIN authors a ON a.id = ba.author_id
+WHERE ba.book_id = ?
+ORDER BY ba.position
+`
+	bookFindTags = `
+SELECT t.name
+FROM book_tags bt
+JOIN tags t ON t.id = bt.tag_id
+WHERE bt.book_id = ?
+ORDER BY t.name
+`
+	bookFindIdentifiers = `
+SELECT type, value
+FROM book_identifiers
+WHERE book_id = ?
+ORDER BY type, value
+`
+	bookFindAuthorsByBooks = `
+SELECT ba.book_id, a.name
+FROM book_authors ba
+JOIN authors a ON a.id = ba.author_id
+WHERE ba.book_id IN (?)
+ORDER BY ba.book_id, ba.position
+`
+	bookFindAll = `
+SELECT b.id, b.title, EXISTS (SELECT 1 FROM read_status rs WHERE rs.user_id = ?1 AND rs.book_id = b.id) AS read
+FROM books b
+WHERE b.status = 'added'
+  AND (?2 = '' OR instr(casefold(b.title), casefold(?2)) > 0
+       OR EXISTS (SELECT 1 FROM book_authors ba JOIN authors a ON a.id = ba.author_id
+                  WHERE ba.book_id = b.id AND instr(casefold(a.name), casefold(?2)) > 0)
+       OR EXISTS (SELECT 1 FROM book_tags bt JOIN tags t ON t.id = bt.tag_id
+                  WHERE bt.book_id = b.id AND instr(casefold(t.name), casefold(?2)) > 0)
+       OR EXISTS (SELECT 1 FROM book_identifiers bi
+                  WHERE bi.book_id = b.id AND replace(?2, '-', '') <> ''
+                    AND instr(replace(casefold(bi.value), '-', ''), replace(casefold(?2), '-', '')) > 0))
+  AND (?3 = 0 OR EXISTS (SELECT 1 FROM book_authors WHERE book_id = b.id AND author_id = ?3))
+  AND (?4 = 0 OR EXISTS (SELECT 1 FROM book_tags WHERE book_id = b.id AND tag_id = ?4))
+  AND (?5 = '' OR b.language = ?5)
+  AND (?6 = '' OR EXISTS (SELECT 1 FROM read_status rs WHERE rs.user_id = ?1 AND rs.book_id = b.id) = (?6 = 'read'))
+ORDER BY CASE WHEN ?7 = 'title' THEN b.title END COLLATE CASEFOLD, b.created_at DESC, b.id DESC
+LIMIT ?8 OFFSET ?9
+`
+	bookCount = `
+SELECT COUNT(*)
+FROM books b
+WHERE b.status = 'added'
+  AND (?2 = '' OR instr(casefold(b.title), casefold(?2)) > 0
+       OR EXISTS (SELECT 1 FROM book_authors ba JOIN authors a ON a.id = ba.author_id
+                  WHERE ba.book_id = b.id AND instr(casefold(a.name), casefold(?2)) > 0)
+       OR EXISTS (SELECT 1 FROM book_tags bt JOIN tags t ON t.id = bt.tag_id
+                  WHERE bt.book_id = b.id AND instr(casefold(t.name), casefold(?2)) > 0)
+       OR EXISTS (SELECT 1 FROM book_identifiers bi
+                  WHERE bi.book_id = b.id AND replace(?2, '-', '') <> ''
+                    AND instr(replace(casefold(bi.value), '-', ''), replace(casefold(?2), '-', '')) > 0))
+  AND (?3 = 0 OR EXISTS (SELECT 1 FROM book_authors WHERE book_id = b.id AND author_id = ?3))
+  AND (?4 = 0 OR EXISTS (SELECT 1 FROM book_tags WHERE book_id = b.id AND tag_id = ?4))
+  AND (?5 = '' OR b.language = ?5)
+  AND (?6 = '' OR EXISTS (SELECT 1 FROM read_status rs WHERE rs.user_id = ?1 AND rs.book_id = b.id) = (?6 = 'read'))
+`
+	bookFindPending = `
+SELECT id, title, 0 AS read
+FROM books
+WHERE status = 'pending' AND (?1 = 0 OR uploaded_by = ?1)
+ORDER BY id DESC
+`
+	bookMarkAdded = `
+UPDATE books SET status = 'added', created_at = ? WHERE id = ? AND status = 'pending'
+`
+	bookDeletePending = `
+DELETE FROM books WHERE id = ? AND status = 'pending'
+`
 	passwordResetTokenCreate = `
 INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
 VALUES (?, ?, ?)
@@ -17,8 +125,14 @@ WHERE token_hash = ?
 	passwordResetTokenDeleteByTokenHash = `
 DELETE FROM password_reset_tokens WHERE token_hash = ?
 `
-	passwordResetTokenDeleteExpired = `
-DELETE FROM password_reset_tokens WHERE expires_at <= ?
+	readStatusCreate = `
+INSERT OR IGNORE INTO read_status (user_id, book_id) VALUES (?, ?)
+`
+	readStatusExists = `
+SELECT EXISTS (SELECT 1 FROM read_status WHERE user_id = ? AND book_id = ?)
+`
+	readStatusDelete = `
+DELETE FROM read_status WHERE user_id = ? AND book_id = ?
 `
 	userCreate = `
 INSERT INTO users (username, password_hash, role, can_upload, can_edit, can_delete)

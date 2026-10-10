@@ -23,11 +23,12 @@ CREATE TABLE books (
   language    TEXT    CHECK (language GLOB '[a-z][a-z]' OR language GLOB '[a-z][a-z][a-z]'),  -- ISO 639-1; ISO 639-3 only if the language has no 2-letter code
   publisher   TEXT,
   pub_year    INTEGER,
-  isbn        TEXT,
   description TEXT,
   format      TEXT    NOT NULL,                -- extension; valid list is the FORMATS registry in code
   file_hash   TEXT    NOT NULL UNIQUE,         -- SHA-256 of the current file: blocks uploading the same book twice
   source_hash TEXT    NOT NULL,                -- SHA-256 of the uploaded original (original.<ext>)
+  status      TEXT    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','added')),  -- pending books stay out of the catalog
+  uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,  -- a pending book is visible to its uploader, admins and root
   created_at  TEXT    NOT NULL
 );
 CREATE INDEX ix_books_title   ON books(title COLLATE CASEFOLD);  -- NOCASE covers only ASCII and mis-sorts Cyrillic
@@ -57,6 +58,13 @@ CREATE TABLE book_tags (
   PRIMARY KEY (book_id, tag_id)
 );
 CREATE INDEX ix_book_tags_tag ON book_tags(tag_id);
+
+CREATE TABLE book_identifiers (
+  book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  type    TEXT    NOT NULL,                    -- lowercase scheme: isbn, doi, litres, livelib…; uuid and calibre are not stored
+  value   TEXT    NOT NULL,                    -- as read; an ISBN without hyphens or spaces, uppercase X
+  PRIMARY KEY (book_id, type, value)
+);
 
 CREATE TABLE read_status (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -12,7 +12,6 @@ type PasswordResetTokenRepository interface {
 	Create(ctx context.Context, token *domain.PasswordResetToken) error
 	FindByTokenHash(ctx context.Context, tokenHash string) (*domain.PasswordResetToken, error)
 	DeleteByTokenHash(ctx context.Context, tokenHash string) error
-	DeleteExpired(ctx context.Context, now string) error
 }
 
 type passwordResetTokenRepository struct {
@@ -31,17 +30,12 @@ func (r *passwordResetTokenRepository) Create(ctx context.Context, token *domain
 func (r *passwordResetTokenRepository) FindByTokenHash(ctx context.Context, tokenHash string) (*domain.PasswordResetToken, error) {
 	var token domain.PasswordResetToken
 	if err := r.db.GetContext(ctx, &token, passwordResetTokenFindByTokenHash, tokenHash); err != nil {
-		return nil, translate(err)
+		return nil, err
 	}
 	return &token, nil
 }
 
 func (r *passwordResetTokenRepository) DeleteByTokenHash(ctx context.Context, tokenHash string) error {
 	result, err := r.db.ExecContext(ctx, passwordResetTokenDeleteByTokenHash, tokenHash)
-	return affectedOne(result, err)
-}
-
-func (r *passwordResetTokenRepository) DeleteExpired(ctx context.Context, now string) error {
-	_, err := r.db.ExecContext(ctx, passwordResetTokenDeleteExpired, now)
-	return err
+	return requireAffected(result, err)
 }

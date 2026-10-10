@@ -8,8 +8,10 @@ import (
 	"io"
 )
 
+const tokenBytes = 32
+
 func NewToken() (plain, hash string, err error) {
-	b := make([]byte, 32)
+	b := make([]byte, tokenBytes)
 	if _, err = io.ReadFull(rand.Reader, b); err != nil {
 		return "", "", err
 	}

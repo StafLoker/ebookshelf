@@ -3,6 +3,7 @@ module ebookshelf
 go 1.27.2
 
 require (
+	github.com/beevik/etree v1.8.1
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/stretchr/testify v1.12.1

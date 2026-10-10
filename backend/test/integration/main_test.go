@@ -128,6 +128,12 @@ func call(t *testing.T, client *http.Client, method, url string, body any) reply
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 
+	return decodeReply(t, resp)
+}
+
+func decodeReply(t *testing.T, resp *http.Response) reply {
+	t.Helper()
+
 	out := reply{status: resp.StatusCode, header: resp.Header, cookies: resp.Cookies()}
 	_ = json.NewDecoder(resp.Body).Decode(&out.body)
 

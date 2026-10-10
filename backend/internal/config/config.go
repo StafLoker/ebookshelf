@@ -8,10 +8,9 @@ import (
 )
 
 const (
-	defaultPort        = 7717
-	defaultMaxUploadMB = 100
-	defaultLogLevel    = "INFO"
-	defaultDataDir     = "/var/lib/ebookshelf"
+	defaultPort     = 7717
+	defaultLogLevel = "INFO"
+	defaultDataDir  = "/var/lib/ebookshelf"
 
 	keyLen = 32
 )
@@ -20,7 +19,6 @@ type Config struct {
 	Port          int
 	SecretKey     []byte
 	EncryptionKey []byte
-	MaxUploadMB   int
 	LogLevel      string
 	DataDir       string
 }
@@ -32,9 +30,8 @@ func Load(path string) (*Config, error) {
 		err  error
 	)
 	server := struct {
-		Port        int `ini:"port"`
-		MaxUploadMB int `ini:"max_upload_mb"`
-	}{Port: defaultPort, MaxUploadMB: defaultMaxUploadMB}
+		Port int `ini:"port"`
+	}{Port: defaultPort}
 	security := struct {
 		SecretKey     string `ini:"secret_key"`
 		EncryptionKey string `ini:"encryption_key"`
@@ -52,17 +49,13 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg = &Config{
-		Port:        server.Port,
-		MaxUploadMB: server.MaxUploadMB,
-		LogLevel:    file.Section("log").Key("level").MustString(defaultLogLevel),
-		DataDir:     file.Section("paths").Key("data_dir").MustString(defaultDataDir),
+		Port:     server.Port,
+		LogLevel: file.Section("log").Key("level").MustString(defaultLogLevel),
+		DataDir:  file.Section("paths").Key("data_dir").MustString(defaultDataDir),
 	}
 
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		return nil, fmt.Errorf("config: invalid port: must be between 1 and 65535")
-	}
-	if cfg.MaxUploadMB < 1 {
-		return nil, fmt.Errorf("config: invalid max_upload_mb: must be greater than 0")
 	}
 	if cfg.SecretKey, err = decodeKey("secret_key", security.SecretKey); err != nil {
 		return nil, err

@@ -11,6 +11,3 @@ WHERE token_hash = ?
 
 -- Name: DeleteByTokenHash
 DELETE FROM password_reset_tokens WHERE token_hash = ?
-
--- Name: DeleteExpired
-DELETE FROM password_reset_tokens WHERE expires_at <= ?

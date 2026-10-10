@@ -2,10 +2,8 @@ package handler
 
 import (
 	"net/http"
-	"strconv"
 
 	"ebookshelf/internal/dto"
-	apperrors "ebookshelf/internal/errors"
 	"ebookshelf/internal/service"
 )
 
@@ -24,7 +22,7 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		WriteError(w, r, err)
 	} else {
-		writeJSON(w, r, http.StatusOK, dto.SuccessMetadata("Users retrieved successfully", users.Items, dto.PaginationMetadata{Page: users.Page, Limit: users.PageSize, Total: users.Total, TotalPages: (users.Total + users.PageSize - 1) / users.PageSize}))
+		writeJSON(w, r, http.StatusOK, dto.SuccessMetadata("Users retrieved successfully", users.Items, dto.Pagination(users)))
 	}
 }
 
@@ -34,10 +32,9 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		created dto.CreateUserResponse
 	)
 
-	actor := r.Context().Value(UserKey{}).(dto.UserResponse)
 	err := decodeJSON(w, r, &req)
 	if err == nil {
-		created, err = h.userSvc.Create(r.Context(), actor.ID, req)
+		created, err = h.userSvc.Create(r.Context(), currentUser(r).ID, req)
 	}
 	if err != nil {
 		WriteError(w, r, err)
@@ -52,13 +49,12 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		user dto.UserResponse
 	)
 
-	actor := r.Context().Value(UserKey{}).(dto.UserResponse)
-	id, err := userID(r)
+	id, err := pathID(r)
 	if err == nil {
 		err = decodeJSON(w, r, &req)
 	}
 	if err == nil {
-		user, err = h.userSvc.Update(r.Context(), actor.ID, id, req)
+		user, err = h.userSvc.Update(r.Context(), currentUser(r).ID, id, req)
 	}
 	if err != nil {
 		WriteError(w, r, err)
@@ -68,10 +64,9 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	actor := r.Context().Value(UserKey{}).(dto.UserResponse)
-	id, err := userID(r)
+	id, err := pathID(r)
 	if err == nil {
-		err = h.userSvc.Delete(r.Context(), actor.ID, id)
+		err = h.userSvc.Delete(r.Context(), currentUser(r).ID, id)
 	}
 	if err != nil {
 		WriteError(w, r, err)
@@ -83,22 +78,13 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) IssueResetToken(w http.ResponseWriter, r *http.Request) {
 	var token string
 
-	actor := r.Context().Value(UserKey{}).(dto.UserResponse)
-	id, err := userID(r)
+	id, err := pathID(r)
 	if err == nil {
-		token, err = h.userSvc.IssueResetToken(r.Context(), actor.ID, id)
+		token, err = h.userSvc.IssueResetToken(r.Context(), currentUser(r).ID, id)
 	}
 	if err != nil {
 		WriteError(w, r, err)
 	} else {
 		writeJSON(w, r, http.StatusOK, dto.Success("Reset token issued", map[string]string{"token": token}))
 	}
-}
-
-func userID(r *http.Request) (int64, error) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		return 0, apperrors.InvalidRequest("invalid user id")
-	}
-	return id, nil
 }

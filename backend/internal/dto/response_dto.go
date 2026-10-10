@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"ebookshelf/internal/domain"
 	apperrors "ebookshelf/internal/errors"
 )
 
@@ -41,6 +42,10 @@ func SuccessMetadata(message string, data any, metadata any) ApiResponse {
 
 func ErrorCode(message string, code apperrors.ErrorCode, details any) ApiResponse {
 	return ApiResponse{Status: "error", Message: message, Data: ErrorData{Code: code, Details: details}}
+}
+
+func Pagination[T any](p domain.Page[T]) PaginationMetadata {
+	return PaginationMetadata{Page: p.Page, Limit: p.PageSize, Total: p.Total, TotalPages: p.TotalPages}
 }
 
 func ParsePage(r *http.Request) (page, limit int) {

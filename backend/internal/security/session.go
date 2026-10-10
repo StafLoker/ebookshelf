@@ -10,11 +10,7 @@ import (
 	"time"
 )
 
-const (
-	SessionTTL = 30 * 24 * time.Hour
-
-	payloadLen = 24
-)
+const payloadLen = 24
 
 var (
 	ErrInvalidSession = errors.New("invalid session")

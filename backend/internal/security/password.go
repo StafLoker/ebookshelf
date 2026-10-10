@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -51,34 +49,4 @@ func VerifyPassword(plain, encoded string) (bool, error) {
 	}
 	got := argon2.IDKey([]byte(plain), salt, iterations, memory, threads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
-}
-
-func ValidatePassword(plain string) []string {
-	var (
-		missing                                  []string
-		hasUpper, hasLower, hasDigit, hasSpecial bool
-	)
-
-	for _, r := range plain {
-		hasUpper = hasUpper || unicode.IsUpper(r)
-		hasLower = hasLower || unicode.IsLower(r)
-		hasDigit = hasDigit || unicode.IsDigit(r)
-		hasSpecial = hasSpecial || !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	}
-	if utf8.RuneCountInString(plain) < 12 {
-		missing = append(missing, "min_length")
-	}
-	if !hasUpper {
-		missing = append(missing, "uppercase")
-	}
-	if !hasLower {
-		missing = append(missing, "lowercase")
-	}
-	if !hasDigit {
-		missing = append(missing, "digit")
-	}
-	if !hasSpecial {
-		missing = append(missing, "special")
-	}
-	return missing
 }

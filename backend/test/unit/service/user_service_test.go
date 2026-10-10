@@ -14,30 +14,6 @@ import (
 	"ebookshelf/test/testutil"
 )
 
-func TestPermissions_Allowed(t *testing.T) {
-	admin := dto.UserResponse{Role: domain.RoleAdmin}
-	flagged := dto.UserResponse{Role: domain.RoleUser, CanEdit: true}
-	plain := dto.UserResponse{Role: domain.RoleUser}
-
-	assert.True(t, service.Allowed(admin, service.PermDelete))
-	assert.True(t, service.Allowed(flagged, service.PermEdit))
-	assert.False(t, service.Allowed(flagged, service.PermUpload))
-	assert.False(t, service.Allowed(plain, service.PermEdit))
-}
-
-func TestPermissions_CanManage(t *testing.T) {
-	root := &domain.User{Role: domain.RoleRoot}
-	admin := &domain.User{Role: domain.RoleAdmin}
-	user := &domain.User{Role: domain.RoleUser}
-
-	assert.True(t, service.CanManage(admin, user))
-	assert.False(t, service.CanManage(admin, admin))
-	assert.True(t, service.CanManage(root, admin))
-	assert.False(t, service.CanManage(root, root))
-	assert.False(t, service.CanManage(admin, root))
-	assert.False(t, service.CanManage(user, user))
-}
-
 func TestUserService_Create_OKAndTokenWorks(t *testing.T) {
 	db := testutil.OpenTempDB(t)
 	userRepo := repository.NewUserRepository(db)
