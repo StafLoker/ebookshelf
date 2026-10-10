@@ -1,0 +1,65 @@
+package handler
+
+import (
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+
+	"ebookshelf/internal/dto"
+	apperrors "ebookshelf/internal/errors"
+)
+
+const maxBodyBytes = 1 << 20 // 1 MB
+
+func writeJSON(w http.ResponseWriter, r *http.Request, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		slog.WarnContext(r.Context(), "write response failed", "err", err)
+	}
+}
+
+func WriteError(w http.ResponseWriter, r *http.Request, err error) {
+	appErr, ok := errors.AsType[*apperrors.AppError](err)
+	if !ok {
+		slog.ErrorContext(r.Context(), "unhandled error", "err", err)
+		appErr = apperrors.Internal("internal error")
+	}
+	writeJSON(w, r, statusOf(appErr.Code), dto.ErrorCode(appErr.Message, appErr.Code, appErr.Details))
+}
+
+func statusOf(code apperrors.ErrorCode) int {
+	switch code {
+	case apperrors.AUTH_INVALID_CREDENTIALS, apperrors.AUTH_UNAUTHENTICATED:
+		return http.StatusUnauthorized
+	case apperrors.AUTH_FORBIDDEN:
+		return http.StatusForbidden
+	case apperrors.AUTH_INVALID_TOKEN, apperrors.AUTH_WEAK_PASSWORD, apperrors.REQ_INVALID:
+		return http.StatusBadRequest
+	case apperrors.AUTH_USER_NOT_FOUND, apperrors.AUTH_NO_ROOT, apperrors.BOOK_NOT_FOUND, apperrors.REQ_NOT_FOUND:
+		return http.StatusNotFound
+	case apperrors.AUTH_USERNAME_TAKEN, apperrors.AUTH_ROOT_EXISTS, apperrors.BOOK_DUPLICATE:
+		return http.StatusConflict
+	case apperrors.BOOK_UNSUPPORTED_FORMAT:
+		return http.StatusUnsupportedMediaType
+	case apperrors.BOOK_UNREADABLE_FILE:
+		return http.StatusUnprocessableEntity
+	case apperrors.BOOK_FILE_TOO_LARGE:
+		return http.StatusRequestEntityTooLarge
+	case apperrors.META_PROVIDER_DOWN:
+		return http.StatusBadGateway
+	case apperrors.REQ_METHOD_NOT_ALLOWED:
+		return http.StatusMethodNotAllowed
+	}
+	return http.StatusInternalServerError
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return apperrors.InvalidRequest("invalid request body")
+	}
+	return nil
+}
