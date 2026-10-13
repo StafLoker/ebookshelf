@@ -1,10 +1,11 @@
 package formats
 
 import (
+	"fmt"
 	"html"
+	"slices"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/beevik/etree"
 	"golang.org/x/text/language"
@@ -13,10 +14,7 @@ import (
 )
 
 const (
-	yearLen   = 4
-	isbn10Len = 10
-	isbn13Len = 13
-	isbnChars = "0123456789Xx- "
+	yearLen = 4
 )
 
 type Metadata struct {
@@ -25,7 +23,7 @@ type Metadata struct {
 	Publisher   string
 	Description string
 	Year        int
-	Authors     []string
+	Authors     []domain.Author
 	Tags        []string
 	Identifiers []domain.Identifier
 	Cover       []byte
@@ -33,6 +31,7 @@ type Metadata struct {
 
 type BookFormat interface {
 	Read(path string) (*Metadata, error)
+	Write(src, dst string, meta *Metadata) error
 }
 
 func For(ext string) BookFormat {
@@ -47,13 +46,64 @@ func For(ext string) BookFormat {
 	return format
 }
 
-func parseLanguage(s string) string {
+func ParseLanguage(s string) string {
 	tag, err := language.Parse(strings.TrimSpace(s))
 	if err != nil {
 		return ""
 	}
 	base, _ := tag.Base()
 	return base.String()
+}
+
+// the type is the scheme attribute; uuid and calibre ids identify the file, not the book, so they are not kept
+func ParseIdentifiers(scheme, text string) []domain.Identifier {
+	var ids []domain.Identifier
+
+	kind, value := strings.ToLower(strings.TrimSpace(scheme)), strings.TrimSpace(text)
+	switch {
+	case kind == "" || value == "" || kind == "uuid" || kind == "calibre":
+	case kind == "isbn":
+		for _, isbn := range parseISBNs(value) {
+			ids = append(ids, domain.Identifier{Type: kind, Value: isbn})
+		}
+	default:
+		ids = append(ids, domain.Identifier{Type: kind, Value: value})
+	}
+	return ids
+}
+
+// builds a valid author from loose name parts read from a file: no commas, a one-word first name,
+// and a last name always, taken from the given names when the file has none
+func newAuthor(first, middle, last string) domain.Author {
+	var (
+		author domain.Author
+		given  = strings.Fields(strings.ReplaceAll(first+" "+middle, ",", " "))
+	)
+
+	author.LastName = strings.Join(strings.Fields(strings.ReplaceAll(last, ",", " ")), " ")
+	if author.LastName == "" {
+		author.LastName, given = strings.Join(given, " "), nil
+	}
+	if len(given) > 0 {
+		author.FirstName, author.MiddleName = given[0], strings.Join(given[1:], " ")
+	}
+	return author
+}
+
+// drops an author without a name and one already in the list
+func appendAuthor(list []domain.Author, a domain.Author) []domain.Author {
+	if a.LastName != "" && !slices.Contains(list, a) {
+		list = append(list, a)
+	}
+	return list
+}
+
+func appendNonEmpty(list []string, s string) []string {
+	s = strings.Join(strings.Fields(s), " ")
+	if s != "" {
+		list = append(list, s)
+	}
+	return list
 }
 
 func stripTags(s string) string {
@@ -93,6 +143,25 @@ func allText(e *etree.Element) string {
 	return b.String()
 }
 
+func textElements(tag string, values []string) []*etree.Element {
+	elements := make([]*etree.Element, len(values))
+	for i, v := range values {
+		elements[i] = etree.NewElement(tag)
+		elements[i].SetText(v)
+	}
+	return elements
+}
+
+// "" for year 0, which clears the field; four digits, because a shorter year does not read back
+func formatYear(year int) string {
+	var text string
+
+	if year != 0 {
+		text = fmt.Sprintf("%04d", year)
+	}
+	return text
+}
+
 func parseYear(s string) int {
 	if len(s) < yearLen {
 		return 0
@@ -101,65 +170,14 @@ func parseYear(s string) int {
 	return max(y, 0)
 }
 
-// each part runs from its first digit to the first character an ISBN cannot hold ("(hardcover)" is cut off);
-// only values with 10 or 13 characters once hyphens and spaces are gone are kept
 func parseISBNs(s string) []string {
 	var list []string
 
-	for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ';' }) {
-		if start := strings.IndexFunc(part, unicode.IsDigit); start >= 0 {
-			part = part[start:]
-			if end := strings.IndexFunc(part, func(r rune) bool { return !strings.ContainsRune(isbnChars, r) }); end >= 0 {
-				part = part[:end]
-			}
-			isbn := strings.Map(func(r rune) rune {
-				if r == '-' || r == ' ' {
-					return -1
-				}
-				return unicode.ToUpper(r)
-			}, part)
-			if len(isbn) == isbn10Len || len(isbn) == isbn13Len {
-				list = append(list, isbn)
-			}
+	for _, part := range strings.Split(s, ",") { // multiple ISBNs can be separated by commas
+		isbn := strings.ToUpper(strings.ReplaceAll(strings.ReplaceAll(part, "-", ""), " ", "")) // remove hyphens and spaces, and normalize to uppercase
+		if len(isbn) == 10 || len(isbn) == 13 {
+			list = append(list, isbn)
 		}
-	}
-	return list
-}
-
-// the type comes from the scheme attribute, else from a "urn:type:value" or "type:value" prefix;
-// a bare value made only of ISBN characters counts as an ISBN, a URL ("http://…") is not an identifier
-func parseIdentifiers(scheme, text string) []domain.Identifier {
-	var ids []domain.Identifier
-
-	kind, value := strings.ToLower(strings.TrimSpace(scheme)), strings.TrimSpace(text)
-	if kind == "" {
-		rest := value
-		if head, tail, ok := strings.Cut(value, ":"); ok && strings.EqualFold(head, "urn") {
-			rest = tail
-		}
-		if k, v, ok := strings.Cut(rest, ":"); ok {
-			kind, value = strings.ToLower(strings.TrimSpace(k)), strings.TrimSpace(v)
-		} else if strings.Trim(rest, isbnChars) == "" {
-			kind = "isbn"
-		}
-	}
-	switch {
-	case kind == "" || value == "" || kind == "uuid" || kind == "calibre" ||
-		strings.ContainsAny(kind, " /") || strings.HasPrefix(value, "//"):
-	case kind == "isbn":
-		for _, isbn := range parseISBNs(value) {
-			ids = append(ids, domain.Identifier{Type: kind, Value: isbn})
-		}
-	default:
-		ids = append(ids, domain.Identifier{Type: kind, Value: value})
-	}
-	return ids
-}
-
-func appendNonEmpty(list []string, s string) []string {
-	s = strings.Join(strings.Fields(s), " ")
-	if s != "" {
-		list = append(list, s)
 	}
 	return list
 }
