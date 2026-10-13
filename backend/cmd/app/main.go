@@ -170,17 +170,20 @@ func runServer(ctx context.Context, cfg *config.Config, c *container.Container) 
 		ln, e = net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
 		return e
 	})
-	if err == nil {
-		go func() { errCh <- srv.Serve(ln) }()
-		slog.InfoContext(ctx, "Server started", "port", cfg.Port)
+	if err != nil {
+		slog.ErrorContext(ctx, "server failed", "err", err)
+		return err
+	}
 
-		select {
-		case err = <-errCh:
-		case <-sigCtx.Done():
-			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
-			defer cancel()
-			err = srv.Shutdown(shutdownCtx)
-		}
+	go func() { errCh <- srv.Serve(ln) }()
+	slog.InfoContext(ctx, "Server started", "port", cfg.Port)
+
+	select {
+	case err = <-errCh:
+	case <-sigCtx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+		defer cancel()
+		err = srv.Shutdown(shutdownCtx)
 	}
 
 	if err != nil {

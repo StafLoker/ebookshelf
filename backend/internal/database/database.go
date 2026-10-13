@@ -44,10 +44,11 @@ func Open(ctx context.Context, path string, log *slog.Logger) (*sqlx.DB, error) 
 	if db, err = sqlx.Open("sqlite", dsn); err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	if err = db.PingContext(ctx); err == nil {
-		err = migrate(ctx, db, log)
+	if err = db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
-	if err != nil {
+	if err = migrate(ctx, db, log); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
