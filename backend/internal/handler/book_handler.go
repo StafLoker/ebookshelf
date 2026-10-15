@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 
-	"ebookshelf/internal/domain"
 	"ebookshelf/internal/dto"
 	apperrors "ebookshelf/internal/errors"
 	"ebookshelf/internal/service"
@@ -37,24 +36,10 @@ func (h *BookHandler) Add(w http.ResponseWriter, r *http.Request) {
 func (h *BookHandler) List(w http.ResponseWriter, r *http.Request) {
 	var (
 		q   = r.URL.Query()
-		req = dto.BookFilterRequest{Query: q.Get("q"), Language: q.Get("language"), Read: q.Get("read"), Sort: q.Get("sort")}
+		req = dto.BookFilterRequest{Status: q.Get("status"), Query: q.Get("q"), Language: q.Get("language"), Read: q.Get("read"), Sort: q.Get("sort")}
 		err error
 	)
 
-	switch domain.BookStatus(q.Get("status")) {
-	case "", domain.BookAdded:
-	case domain.BookPending:
-		pending, err := h.bookSvc.ListPending(r.Context(), currentUser(r))
-		if err != nil {
-			WriteError(w, r, err)
-			return
-		}
-		writeJSON(w, r, http.StatusOK, dto.Success("Pending books retrieved successfully", pending))
-		return
-	default:
-		WriteError(w, r, apperrors.InvalidRequest("status must be added or pending"))
-		return
-	}
 	page, limit := dto.ParsePage(r)
 	req.AuthorID, err = queryID(r, "author")
 	if err != nil {
@@ -66,7 +51,7 @@ func (h *BookHandler) List(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, err)
 		return
 	}
-	books, err := h.bookSvc.List(r.Context(), currentUser(r).ID, req, page, limit)
+	books, err := h.bookSvc.List(r.Context(), currentUser(r), req, page, limit)
 	if err != nil {
 		WriteError(w, r, err)
 		return

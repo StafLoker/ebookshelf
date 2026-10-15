@@ -74,7 +74,7 @@ func (s *BookService) Add(ctx context.Context, actorID int64, filename string, s
 
 	book := bookFromMetadata(meta, ext)
 	book.FileHash, book.SourceHash = hash, hash
-	book.Status, book.UploadedBy = domain.BookPending, &actorID
+	book.Status, book.AddedBy = domain.BookPending, &actorID
 	book.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err = s.insertPending(ctx, book, tmp); err != nil {
 		return dto.BookResponse{}, err
@@ -87,8 +87,10 @@ func (s *BookService) Add(ctx context.Context, actorID int64, filename string, s
 
 // ---- read ----
 
-func (s *BookService) List(ctx context.Context, userID int64, req dto.BookFilterRequest, page, pageSize int) (domain.Page[dto.BookSummaryResponse], error) {
+// a pending book is listed only to its uploader, admin and root
+func (s *BookService) List(ctx context.Context, actor dto.UserResponse, req dto.BookFilterRequest, page, pageSize int) (domain.Page[dto.BookSummaryResponse], error) {
 	filter := domain.BookFilter{
+		Status:   domain.BookStatus(req.Status),
 		Query:    strings.TrimSpace(req.Query),
 		AuthorID: req.AuthorID,
 		TagID:    req.TagID,
@@ -97,11 +99,17 @@ func (s *BookService) List(ctx context.Context, userID int64, req dto.BookFilter
 		Sort:     domain.BookSort(req.Sort),
 	}
 
+	if filter.Status == "" {
+		filter.Status = domain.BookAdded
+	}
+	if filter.Status == domain.BookPending && !actor.Role.IsStaff() {
+		filter.AddedBy = actor.ID
+	}
 	if !filter.Valid() {
-		return domain.Page[dto.BookSummaryResponse]{}, apperrors.InvalidRequest("read must be read or unread and sort must be created or title")
+		return domain.Page[dto.BookSummaryResponse]{}, apperrors.InvalidRequest("status must be added or pending, read must be read or unread and sort must be created or title")
 	}
 
-	books, err := s.bookRepo.FindAll(ctx, userID, filter, page, pageSize)
+	books, err := s.bookRepo.FindAll(ctx, actor.ID, filter, page, pageSize)
 	if err != nil {
 		slog.ErrorContext(ctx, "list books failed", "err", err)
 		return domain.Page[dto.BookSummaryResponse]{}, apperrors.Internal("failed to list books")
@@ -112,26 +120,6 @@ func (s *BookService) List(ctx context.Context, userID int64, req dto.BookFilter
 		items[i] = dto.BookSummaryResponse{ID: b.ID, Title: b.Title, Authors: toAuthors(b.Authors), Read: b.Read}
 	}
 	return domain.NewPage(items, books.Page, books.PageSize, books.Total), nil
-}
-
-// the pending books of the actor, or of everyone for admin and root
-func (s *BookService) ListPending(ctx context.Context, actor dto.UserResponse) ([]dto.BookSummaryResponse, error) {
-	var uploadedBy int64
-
-	if !actor.Role.IsStaff() {
-		uploadedBy = actor.ID
-	}
-	books, err := s.bookRepo.FindPending(ctx, uploadedBy)
-	if err != nil {
-		slog.ErrorContext(ctx, "list pending books failed", "err", err)
-		return nil, apperrors.Internal("failed to list pending books")
-	}
-
-	items := make([]dto.BookSummaryResponse, len(books))
-	for i, b := range books {
-		items[i] = dto.BookSummaryResponse{ID: b.ID, Title: b.Title, Authors: toAuthors(b.Authors)}
-	}
-	return items, nil
 }
 
 func (s *BookService) Get(ctx context.Context, actor dto.UserResponse, id int64) (dto.BookResponse, error) {
@@ -282,7 +270,7 @@ func (s *BookService) find(ctx context.Context, actor dto.UserResponse, id int64
 		slog.ErrorContext(ctx, "find book failed", "book_id", id, "err", err)
 		return book, apperrors.Internal("failed to find book")
 	}
-	if err != nil || book.Status == domain.BookPending && !actor.Role.IsStaff() && (book.UploadedBy == nil || *book.UploadedBy != actor.ID) {
+	if err != nil || book.Status == domain.BookPending && !actor.Role.IsStaff() && (book.AddedBy == nil || *book.AddedBy != actor.ID) {
 		return book, apperrors.BookNotFound("book not found")
 	}
 	return book, nil

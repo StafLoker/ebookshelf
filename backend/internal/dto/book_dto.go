@@ -3,6 +3,7 @@ package dto
 import "ebookshelf/internal/domain"
 
 type BookFilterRequest struct {
+	Status   string
 	Query    string
 	AuthorID int64
 	TagID    int64

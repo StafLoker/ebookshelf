@@ -73,11 +73,11 @@ func TestBookService_Add_PendingUntilCommit(t *testing.T) {
 
 	pending, err := svc.book.Add(ctx, svc.actor.ID, "Title.epub", openFile(t, path))
 	require.NoError(t, err)
-	before, err := svc.book.List(ctx, svc.actor.ID, dto.BookFilterRequest{}, 1, 24)
+	before, err := svc.book.List(ctx, svc.actor, dto.BookFilterRequest{}, 1, 24)
 	require.NoError(t, err)
 	added, err := svc.book.Commit(ctx, svc.actor, pending.ID)
 	require.NoError(t, err)
-	after, err := svc.book.List(ctx, svc.actor.ID, dto.BookFilterRequest{}, 1, 24)
+	after, err := svc.book.List(ctx, svc.actor, dto.BookFilterRequest{}, 1, 24)
 	require.NoError(t, err)
 
 	assert.Equal(t, domain.BookPending, pending.Status)
@@ -137,15 +137,15 @@ func TestBookService_Get_OnlyUploaderAndAdmins(t *testing.T) {
 
 	_, otherErr := svc.book.Get(ctx, svc.other, pending.ID)
 	_, adminErr := svc.book.Get(ctx, dto.UserResponse{ID: 99, Role: domain.RoleAdmin}, pending.ID)
-	mine, err := svc.book.ListPending(ctx, svc.actor)
+	mine, err := svc.book.List(ctx, svc.actor, dto.BookFilterRequest{Status: "pending"}, 1, 24)
 	require.NoError(t, err)
-	others, err := svc.book.ListPending(ctx, svc.other)
+	others, err := svc.book.List(ctx, svc.other, dto.BookFilterRequest{Status: "pending"}, 1, 24)
 	require.NoError(t, err)
 
 	assert.ErrorIs(t, otherErr, apperrors.ErrBookNotFound)
 	assert.NoError(t, adminErr)
-	assert.Len(t, mine, 1)
-	assert.Empty(t, others)
+	assert.Equal(t, 1, mine.Total)
+	assert.Equal(t, 0, others.Total)
 }
 
 func TestBookService_File_SanitizedName(t *testing.T) {
@@ -271,7 +271,7 @@ func TestBookService_MarkRead_ListedAsRead(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, svc.book.MarkRead(ctx, svc.actor, 1))
-	read, err := svc.book.List(ctx, svc.actor.ID, dto.BookFilterRequest{Read: "read"}, 1, 24)
+	read, err := svc.book.List(ctx, svc.actor, dto.BookFilterRequest{Read: "read"}, 1, 24)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, read.Total)

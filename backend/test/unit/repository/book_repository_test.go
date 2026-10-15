@@ -82,11 +82,11 @@ func TestBookRepository_FindAll_SearchAndReadFilter(t *testing.T) {
 	require.NoError(t, bookRepo.Create(ctx, newBook("Other", "h2", []string{"Ann"}, []string{"history"}), nil))
 	require.NoError(t, readRepo.Create(ctx, userID, 2))
 
-	byTitle, err := bookRepo.FindAll(ctx, userID, domain.BookFilter{Query: "ЕЛЬЦИН"}, 1, 24)
+	byTitle, err := bookRepo.FindAll(ctx, userID, domain.BookFilter{Status: domain.BookAdded, Query: "ЕЛЬЦИН"}, 1, 24)
 	require.NoError(t, err)
-	byTag, err := bookRepo.FindAll(ctx, userID, domain.BookFilter{Query: "HIST"}, 1, 24)
+	byTag, err := bookRepo.FindAll(ctx, userID, domain.BookFilter{Status: domain.BookAdded, Query: "HIST"}, 1, 24)
 	require.NoError(t, err)
-	unread, err := bookRepo.FindAll(ctx, userID, domain.BookFilter{Read: domain.ReadUnread}, 1, 24)
+	unread, err := bookRepo.FindAll(ctx, userID, domain.BookFilter{Status: domain.BookAdded, Read: domain.ReadUnread}, 1, 24)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, byTitle.Total)
@@ -105,9 +105,9 @@ func TestBookRepository_FindAll_TotalPages(t *testing.T) {
 		require.NoError(t, bookRepo.Create(ctx, newBook(hash, hash, nil, nil), nil))
 	}
 
-	second, err := bookRepo.FindAll(ctx, 1, domain.BookFilter{}, 2, 2)
+	second, err := bookRepo.FindAll(ctx, 1, domain.BookFilter{Status: domain.BookAdded}, 2, 2)
 	require.NoError(t, err)
-	empty, err := bookRepo.FindAll(ctx, 1, domain.BookFilter{Query: "nothing"}, 1, 2)
+	empty, err := bookRepo.FindAll(ctx, 1, domain.BookFilter{Status: domain.BookAdded, Query: "nothing"}, 1, 2)
 	require.NoError(t, err)
 
 	assert.Equal(t, 3, second.Total)
@@ -127,11 +127,11 @@ func TestBookRepository_Identifiers_StoredAndSearchable(t *testing.T) {
 
 	found, err := bookRepo.FindByID(ctx, book.ID)
 	require.NoError(t, err)
-	byIdentifier, err := bookRepo.FindAll(ctx, 0, domain.BookFilter{Query: "5389099"}, 1, 24)
+	byIdentifier, err := bookRepo.FindAll(ctx, 0, domain.BookFilter{Status: domain.BookAdded, Query: "5389099"}, 1, 24)
 	require.NoError(t, err)
-	byHyphenated, err := bookRepo.FindAll(ctx, 0, domain.BookFilter{Query: "978-5-389-09940-1"}, 1, 24)
+	byHyphenated, err := bookRepo.FindAll(ctx, 0, domain.BookFilter{Status: domain.BookAdded, Query: "978-5-389-09940-1"}, 1, 24)
 	require.NoError(t, err)
-	hyphensOnly, err := bookRepo.FindAll(ctx, 0, domain.BookFilter{Query: "-"}, 1, 24)
+	hyphensOnly, err := bookRepo.FindAll(ctx, 0, domain.BookFilter{Status: domain.BookAdded, Query: "-"}, 1, 24)
 	require.NoError(t, err)
 
 	assert.Equal(t, []domain.Identifier{{Type: "isbn", Value: "9785389099401"}, {Type: "litres", Value: "42"}}, found.Identifiers)

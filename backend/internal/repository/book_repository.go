@@ -15,7 +15,6 @@ type BookRepository interface {
 	FindByID(ctx context.Context, id int64) (*domain.Book, error)
 	FindByHash(ctx context.Context, hash string) (*domain.Book, error)
 	FindAll(ctx context.Context, userID int64, filter domain.BookFilter, page, pageSize int) (domain.Page[domain.BookSummary], error)
-	FindPending(ctx context.Context, uploadedBy int64) ([]domain.BookSummary, error)
 	Update(ctx context.Context, book *domain.Book, beforeCommit func() error) error
 	MarkAdded(ctx context.Context, id int64, createdAt string) error
 	Delete(ctx context.Context, id int64, status domain.BookStatus) error
@@ -86,7 +85,7 @@ func (r *bookRepository) FindAll(ctx context.Context, userID int64, filter domai
 	var (
 		total int
 		items = []domain.BookSummary{}
-		args  = []any{userID, filter.Query, filter.AuthorID, filter.TagID, filter.Language, filter.Read}
+		args  = []any{userID, filter.Status, filter.AddedBy, filter.Query, filter.AuthorID, filter.TagID, filter.Language, filter.Read}
 	)
 
 	if err := r.db.GetContext(ctx, &total, bookCount, args...); err != nil {
@@ -101,21 +100,6 @@ func (r *bookRepository) FindAll(ctx context.Context, userID int64, filter domai
 		}
 	}
 	return domain.NewPage(items, page, pageSize, total), nil
-}
-
-// uploadedBy 0 lists every pending book
-func (r *bookRepository) FindPending(ctx context.Context, uploadedBy int64) ([]domain.BookSummary, error) {
-	items := []domain.BookSummary{}
-
-	if err := r.db.SelectContext(ctx, &items, bookFindPending, uploadedBy); err != nil {
-		return nil, err
-	}
-	if len(items) > 0 {
-		if err := r.attachAuthors(ctx, items); err != nil {
-			return nil, err
-		}
-	}
-	return items, nil
 }
 
 // links are pruned instead of recreated: dropping the last link deletes the author or tag, and with it its id

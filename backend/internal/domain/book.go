@@ -29,7 +29,7 @@ type Book struct {
 	FileHash    string       `db:"file_hash"`
 	SourceHash  string       `db:"source_hash"`
 	Status      BookStatus   `db:"status"`
-	UploadedBy  *int64       `db:"uploaded_by"`
+	AddedBy     *int64       `db:"added_by"`
 	CreatedAt   string       `db:"created_at"`
 	Authors     []Author     `db:"-"`
 	Tags        []string     `db:"-"`
@@ -49,6 +49,8 @@ type BookSummary struct {
 }
 
 type BookFilter struct {
+	Status   BookStatus
+	AddedBy  int64 // 0 is any user
 	Query    string
 	AuthorID int64
 	TagID    int64
@@ -58,6 +60,7 @@ type BookFilter struct {
 }
 
 func (f BookFilter) Valid() bool {
-	return (f.Read == ReadAny || f.Read == ReadOnly || f.Read == ReadUnread) &&
+	return (f.Status == BookAdded || f.Status == BookPending) &&
+		(f.Read == ReadAny || f.Read == ReadOnly || f.Read == ReadUnread) &&
 		(f.Sort == "" || f.Sort == SortCreated || f.Sort == SortTitle)
 }

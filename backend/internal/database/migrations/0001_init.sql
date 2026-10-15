@@ -26,7 +26,7 @@ CREATE TABLE books (
   file_hash   TEXT    NOT NULL UNIQUE,         -- of the current file; an upload with a known hash is a duplicate
   source_hash TEXT    NOT NULL,                -- of the uploaded original, which stays in original.<ext>
   status      TEXT    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','added')),  -- pending books stay out of the catalog
-  uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  added_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at  TEXT    NOT NULL
 );
 
