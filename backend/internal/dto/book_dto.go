@@ -11,20 +11,41 @@ type BookFilterRequest struct {
 	Sort     string
 }
 
-type BookMetadataResponse struct {
-	Title       string               `json:"title"`
-	Language    *string              `json:"language"`
-	Publisher   *string              `json:"publisher"`
-	PubYear     *int                 `json:"pub_year"`
-	Description *string              `json:"description"`
-	Format      string               `json:"format"`
-	Authors     []string             `json:"authors"`
-	Tags        []string             `json:"tags"`
-	Identifiers []IdentifierResponse `json:"identifiers"`
-	HasCover    bool                 `json:"has_cover"`
+// replaces all the metadata: a field left out is cleared
+type UpdateBookRequest struct {
+	Title       string       `json:"title"`
+	Language    string       `json:"language"`
+	Publisher   string       `json:"publisher"`
+	PubYear     int          `json:"pub_year"`
+	Description string       `json:"description"`
+	Authors     []Author     `json:"authors"`
+	Tags        []string     `json:"tags"`
+	Identifiers []Identifier `json:"identifiers"`
 }
 
-type IdentifierResponse struct {
+// in a request only the name parts are read
+type Author struct {
+	ID         int64  `json:"id"`
+	FirstName  string `json:"first_name"`
+	MiddleName string `json:"middle_name"`
+	LastName   string `json:"last_name"`
+	Name       string `json:"name"`
+}
+
+type BookMetadataResponse struct {
+	Title       string       `json:"title"`
+	Language    *string      `json:"language"`
+	Publisher   *string      `json:"publisher"`
+	PubYear     *int         `json:"pub_year"`
+	Description *string      `json:"description"`
+	Format      string       `json:"format"`
+	Authors     []Author     `json:"authors"`
+	Tags        []string     `json:"tags"`
+	Identifiers []Identifier `json:"identifiers"`
+	HasCover    bool         `json:"has_cover"`
+}
+
+type Identifier struct {
 	Type  string `json:"type"`
 	Value string `json:"value"`
 }
@@ -40,7 +61,7 @@ type BookResponse struct {
 type BookSummaryResponse struct {
 	ID      int64    `json:"id"`
 	Title   string   `json:"title"`
-	Authors []string `json:"authors"`
+	Authors []Author `json:"authors"`
 	Read    bool     `json:"read"`
 }
 

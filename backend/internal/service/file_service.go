@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,14 +39,11 @@ func NewFileService(root string) *FileService {
 }
 
 func (s *FileService) Save(ctx context.Context, relPath string, src io.Reader, policy domain.UploadPolicy) error {
-	var err error
-
-	if ext := fileExt(relPath); !slices.Contains(policy.AllowedExts, ext) {
-		err = apperrors.UnsupportedFormat(fmt.Sprintf("format %q is not supported", ext))
-	} else {
-		err = s.write(ctx, s.Path(relPath), src, policy.MaxSizeBytes)
+	ext := fileExt(relPath)
+	if !slices.Contains(policy.AllowedExts, ext) {
+		return apperrors.UnsupportedFormat(fmt.Sprintf("format %q is not supported", ext))
 	}
-	return err
+	return s.write(ctx, s.Path(relPath), src, policy.MaxSizeBytes)
 }
 
 func (s *FileService) Link(from, to string) error {
@@ -54,11 +52,10 @@ func (s *FileService) Link(from, to string) error {
 
 func (s *FileService) Move(from, to string) error {
 	dst := s.Path(to)
-	err := os.MkdirAll(filepath.Dir(dst), dirMode)
-	if err == nil {
-		err = os.Rename(s.Path(from), dst)
+	if err := os.MkdirAll(filepath.Dir(dst), dirMode); err != nil {
+		return err
 	}
-	return err
+	return os.Rename(s.Path(from), dst)
 }
 
 // a missing path is not an error, so cleanup can run unconditionally
@@ -72,27 +69,31 @@ func (s *FileService) Exists(relPath string) bool {
 }
 
 func (s *FileService) Hash(relPath string) (string, error) {
-	var sum string
-
 	f, err := os.Open(s.Path(relPath))
-	if err == nil {
-		defer func() { _ = f.Close() }()
-		h := sha256.New()
-		if _, err = io.Copy(h, f); err == nil {
-			sum = hex.EncodeToString(h.Sum(nil))
-		}
+	if err != nil {
+		return "", err
 	}
-	return sum, err
+	defer func() { _ = f.Close() }()
+
+	h := sha256.New()
+	if _, err = io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// a fresh path in tmp/ for a file still being received
+// a fresh path in tmp/ for a file still being written
 func (*FileService) NewTmpPath(ext string) string {
-	return path.Join(tmpDir, "upload-"+rand.Text()+"."+ext)
+	return path.Join(tmpDir, "file-"+rand.Text()+"."+ext)
 }
 
-// tmp/ only holds files cut off mid-upload, so it is emptied at startup
+// tmp/ only holds files cut off mid-write, so it is emptied at startup
 func (s *FileService) ClearTmp(ctx context.Context) {
 	if err := s.Remove(tmpDir); err != nil {
+		slog.WarnContext(ctx, "clear tmp failed", "err", err)
+		return
+	}
+	if err := os.MkdirAll(s.Path(tmpDir), dirMode); err != nil {
 		slog.WarnContext(ctx, "clear tmp failed", "err", err)
 	}
 }
@@ -118,34 +119,33 @@ func (*FileService) CoverPath(id int64, ext string) string {
 }
 
 func (s *FileService) write(ctx context.Context, abs string, src io.Reader, maxBytes int64) error {
-	var (
-		out *os.File
-		n   int64
-		err error
-	)
-
-	if err = os.MkdirAll(filepath.Dir(abs), dirMode); err == nil {
-		out, err = os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
-	}
-	if err == nil {
-		n, err = io.Copy(out, io.LimitReader(src, maxBytes+1))
-		if closeErr := out.Close(); err == nil {
-			err = closeErr
-		}
-	}
-	switch {
-	case err != nil:
+	if err := os.MkdirAll(filepath.Dir(abs), dirMode); err != nil {
 		slog.ErrorContext(ctx, "save file failed", "err", err)
-		err = apperrors.Internal("failed to save file")
-	case n > maxBytes:
-		err = apperrors.FileTooLarge(fmt.Sprintf("file must not exceed %d MB", maxBytes/domain.MB))
+		return apperrors.Internal("failed to save file")
 	}
-	if err != nil && out != nil {
+	out, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
+	if err != nil {
+		slog.ErrorContext(ctx, "save file failed", "err", err)
+		return apperrors.Internal("failed to save file")
+	}
+	removePartial := func() {
 		if rmErr := os.Remove(abs); rmErr != nil {
 			slog.WarnContext(ctx, "remove partial file failed", "err", rmErr)
 		}
 	}
-	return err
+
+	n, err := io.Copy(out, io.LimitReader(src, maxBytes+1))
+	err = errors.Join(err, out.Close())
+	if err != nil {
+		slog.ErrorContext(ctx, "save file failed", "err", err)
+		removePartial()
+		return apperrors.Internal("failed to save file")
+	}
+	if n > maxBytes {
+		removePartial()
+		return apperrors.FileTooLarge(fmt.Sprintf("file must not exceed %d MB", maxBytes/domain.MB))
+	}
+	return nil
 }
 
 func fileExt(name string) string {

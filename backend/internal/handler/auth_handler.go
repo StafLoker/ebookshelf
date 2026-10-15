@@ -21,21 +21,20 @@ func NewAuthHandler(authSvc *service.AuthService) *AuthHandler {
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	var (
-		req   dto.LoginRequest
-		login dto.LoginResponse
-	)
+	var req dto.LoginRequest
 
 	err := decodeJSON(w, r, &req)
-	if err == nil {
-		login, err = h.authSvc.Login(r.Context(), req.Username, req.Password)
-	}
 	if err != nil {
 		WriteError(w, r, err)
-	} else {
-		setSessionCookie(w, r, login.Cookie, login.ExpiresAt)
-		writeJSON(w, r, http.StatusOK, dto.Success("Login successful", login))
+		return
 	}
+	login, err := h.authSvc.Login(r.Context(), req.Username, req.Password)
+	if err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	setSessionCookie(w, r, login.Cookie, login.ExpiresAt)
+	writeJSON(w, r, http.StatusOK, dto.Success("Login successful", login))
 }
 
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
@@ -51,46 +50,49 @@ func (h *AuthHandler) CheckResetToken(w http.ResponseWriter, r *http.Request) {
 	var req dto.ResetPasswordRequest
 
 	err := decodeJSON(w, r, &req)
-	if err == nil {
-		err = h.authSvc.CheckResetToken(r.Context(), req.Token)
-	}
 	if err != nil {
 		WriteError(w, r, err)
-	} else {
-		writeJSON(w, r, http.StatusOK, dto.Success("Token is valid", nil))
+		return
 	}
+	err = h.authSvc.CheckResetToken(r.Context(), req.Token)
+	if err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, dto.Success("Token is valid", nil))
 }
 
 func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	var req dto.ResetPasswordRequest
 
 	err := decodeJSON(w, r, &req)
-	if err == nil {
-		err = h.authSvc.ResetPassword(r.Context(), req.Token, req.NewPassword)
-	}
 	if err != nil {
 		WriteError(w, r, err)
-	} else {
-		writeJSON(w, r, http.StatusOK, dto.Success("Password reset successful", nil))
+		return
 	}
+	err = h.authSvc.ResetPassword(r.Context(), req.Token, req.NewPassword)
+	if err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, dto.Success("Password reset successful", nil))
 }
 
 func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
-	var (
-		req   dto.ChangePasswordRequest
-		login dto.LoginResponse
-	)
+	var req dto.ChangePasswordRequest
 
 	err := decodeJSON(w, r, &req)
-	if err == nil {
-		login, err = h.authSvc.ChangePassword(r.Context(), currentUser(r).ID, req.CurrentPassword, req.NewPassword)
-	}
 	if err != nil {
 		WriteError(w, r, err)
-	} else {
-		setSessionCookie(w, r, login.Cookie, login.ExpiresAt)
-		writeJSON(w, r, http.StatusOK, dto.Success("Password changed successfully", nil))
+		return
 	}
+	login, err := h.authSvc.ChangePassword(r.Context(), currentUser(r).ID, req.CurrentPassword, req.NewPassword)
+	if err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	setSessionCookie(w, r, login.Cookie, login.ExpiresAt)
+	writeJSON(w, r, http.StatusOK, dto.Success("Password changed successfully", nil))
 }
 
 func setSessionCookie(w http.ResponseWriter, r *http.Request, value string, expires time.Time) {

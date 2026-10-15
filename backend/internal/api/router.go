@@ -13,11 +13,10 @@ import (
 
 func NewRouter(c *container.Container) http.Handler {
 	var (
-		r             = chi.NewRouter()
-		authHandler   = handler.NewAuthHandler(c.AuthSvc)
-		userHandler   = handler.NewUserHandler(c.UserSvc)
-		bookHandler   = handler.NewBookHandler(c.BookSvc)
-		uploadHandler = handler.NewUploadHandler(c.BookSvc)
+		r           = chi.NewRouter()
+		authHandler = handler.NewAuthHandler(c.AuthSvc)
+		userHandler = handler.NewUserHandler(c.UserSvc)
+		bookHandler = handler.NewBookHandler(c.BookSvc)
 	)
 
 	r.Use(correlation, recoverer, accessLog, noStore)
@@ -46,13 +45,15 @@ func NewRouter(c *container.Container) http.Handler {
 		r.Delete("/api/books/{id}/read", bookHandler.MarkUnread)
 
 		r.Group(func(r chi.Router) {
-			r.Use(requirePermission(domain.PermUpload))
-			r.Get("/api/uploads", uploadHandler.List)
-			r.Post("/api/uploads", uploadHandler.Upload)
-			r.Get("/api/uploads/{id}", uploadHandler.Get)
-			r.Delete("/api/uploads/{id}", uploadHandler.Discard)
-			r.Post("/api/uploads/{id}/commit", uploadHandler.Commit)
+			r.Use(requirePermission(domain.PermAdd))
+			r.Post("/api/books", bookHandler.Add)
+			r.Post("/api/books/{id}/commit", bookHandler.Commit)
 		})
+
+		// edit and delete check the permission in the service: a pending book needs can_add, one in the library can_edit or can_delete
+		r.Put("/api/books/{id}", bookHandler.Update)
+		r.Put("/api/books/{id}/cover", bookHandler.SetCover)
+		r.Delete("/api/books/{id}", bookHandler.Delete)
 
 		r.Group(func(r chi.Router) {
 			r.Use(requireAdmin)

@@ -20,7 +20,7 @@ func WriteFB2(t *testing.T, dir, title, author string) string {
 
 	content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"><description><title-info>
-<genre>prose</genre><author><first-name>%s</first-name></author><book-title>%s</book-title><lang>ru</lang>
+<genre>prose</genre><author><first-name>%s</first-name></author><book-title>%s</book-title><keywords>fiction, war</keywords><lang>ru</lang>
 </title-info></description><body><section><p>text</p></section></body></FictionBook>`, author, title)
 	path := filepath.Join(dir, strings.ReplaceAll(title, "/", "_")+".fb2")
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
@@ -42,8 +42,6 @@ func WriteEPUB(t *testing.T, dir, title, author string) string {
 <dc:identifier xmlns:opf="http://www.idpf.org/2007/opf" opf:scheme="ISBN">978-5-389-09940-1</dc:identifier>
 <dc:identifier xmlns:opf="http://www.idpf.org/2007/opf" opf:scheme="litres">42</dc:identifier>
 <dc:identifier xmlns:opf="http://www.idpf.org/2007/opf" opf:scheme="UUID">urn:uuid:0b2f5a3e</dc:identifier>
-<dc:identifier>urn:isbn:5-93972-087-0</dc:identifier><dc:identifier>no type here</dc:identifier>
-<dc:identifier>http://example.com/book</dc:identifier><dc:identifier>978-5-17-111111-x</dc:identifier>
 <meta name="cover" content="cover"/></metadata>
 <manifest><item id="cover" href="cover.png" media-type="image/png"/></manifest></package>`, title, author)},
 		{"OEBPS/cover.png", cover.String()},
@@ -59,4 +57,13 @@ func WriteEPUB(t *testing.T, dir, title, author string) string {
 	path := filepath.Join(dir, strings.ReplaceAll(title, "/", "_")+".epub")
 	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
 	return path
+}
+
+// PNG returns a blank square PNG; a different size gives different bytes.
+func PNG(t *testing.T, size int) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	require.NoError(t, png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, size, size))))
+	return buf.Bytes()
 }

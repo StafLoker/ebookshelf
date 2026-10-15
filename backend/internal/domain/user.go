@@ -17,7 +17,7 @@ const (
 type Permission string
 
 const (
-	PermUpload Permission = "upload"
+	PermAdd    Permission = "add"
 	PermEdit   Permission = "edit"
 	PermDelete Permission = "delete"
 )
@@ -33,7 +33,7 @@ type User struct {
 	Username       string `db:"username"`
 	PasswordHash   string `db:"password_hash"`
 	Role           Role   `db:"role"`
-	CanUpload      bool   `db:"can_upload"`
+	CanAdd         bool   `db:"can_add"`
 	CanEdit        bool   `db:"can_edit"`
 	CanDelete      bool   `db:"can_delete"`
 	SessionVersion int64  `db:"session_version"`
@@ -52,7 +52,7 @@ func (r Role) IsAssignable() bool {
 // admins and root hold every permission; a plain user only the flags set on it
 func (u *User) Allowed(perm Permission) bool {
 	return u.Role.IsStaff() ||
-		perm == PermUpload && u.CanUpload ||
+		perm == PermAdd && u.CanAdd ||
 		perm == PermEdit && u.CanEdit ||
 		perm == PermDelete && u.CanDelete
 }

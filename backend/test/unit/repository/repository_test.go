@@ -16,7 +16,7 @@ import (
 func TestUserRepository_Create_FindByUsername(t *testing.T) {
 	ctx := context.Background()
 	userRepo := repository.NewUserRepository(testutil.OpenTempDB(t))
-	user := &domain.User{Username: "Alice", PasswordHash: "h", Role: domain.RoleUser, CanUpload: true}
+	user := &domain.User{Username: "Alice", PasswordHash: "h", Role: domain.RoleUser, CanAdd: true}
 	require.NoError(t, userRepo.Create(ctx, user))
 
 	found, err := userRepo.FindByUsername(ctx, "ALICE")

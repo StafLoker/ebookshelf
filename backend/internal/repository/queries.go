@@ -8,12 +8,13 @@ INSERT INTO books (title, language, publisher, pub_year, description, format, fi
 VALUES (:title, :language, :publisher, :pub_year, :description, :format, :file_hash, :source_hash, :status, :uploaded_by, :created_at)
 `
 	bookUpsertAuthor = `
-INSERT INTO authors (name) VALUES (?)
-ON CONFLICT (name) DO UPDATE SET name = authors.name
+INSERT INTO authors (first_name, middle_name, last_name) VALUES (?, ?, ?)
+ON CONFLICT (last_name, first_name, middle_name) DO UPDATE SET last_name = authors.last_name
 RETURNING id
 `
 	bookCreateAuthorLink = `
-INSERT OR IGNORE INTO book_authors (book_id, author_id, position) VALUES (?, ?, ?)
+INSERT INTO book_authors (book_id, author_id, position) VALUES (?, ?, ?)
+ON CONFLICT (book_id, author_id) DO UPDATE SET position = excluded.position
 `
 	bookUpsertTag = `
 INSERT INTO tags (name) VALUES (?)
@@ -28,16 +29,17 @@ SELECT id, title, language, publisher, pub_year, description, format, file_hash,
 FROM books
 WHERE id = ?
 `
-	bookFindByFileHash = `
+	bookFindByHash = `
 SELECT id, title, language, publisher, pub_year, description, format, file_hash, source_hash, status, uploaded_by, created_at
 FROM books
-WHERE file_hash = ?
+WHERE file_hash = ?1 OR source_hash = ?1
+LIMIT 1
 `
 	bookCreateIdentifier = `
 INSERT OR IGNORE INTO book_identifiers (book_id, type, value) VALUES (?, ?, ?)
 `
 	bookFindAuthors = `
-SELECT a.name
+SELECT a.id, a.first_name, a.middle_name, a.last_name
 FROM book_authors ba
 JOIN authors a ON a.id = ba.author_id
 WHERE ba.book_id = ?
@@ -57,7 +59,7 @@ WHERE book_id = ?
 ORDER BY type, value
 `
 	bookFindAuthorsByBooks = `
-SELECT ba.book_id, a.name
+SELECT ba.book_id, a.id, a.first_name, a.middle_name, a.last_name
 FROM book_authors ba
 JOIN authors a ON a.id = ba.author_id
 WHERE ba.book_id IN (?)
@@ -69,7 +71,8 @@ FROM books b
 WHERE b.status = 'added'
   AND (?2 = '' OR instr(casefold(b.title), casefold(?2)) > 0
        OR EXISTS (SELECT 1 FROM book_authors ba JOIN authors a ON a.id = ba.author_id
-                  WHERE ba.book_id = b.id AND instr(casefold(a.name), casefold(?2)) > 0)
+                  WHERE ba.book_id = b.id
+                    AND instr(casefold(trim(a.first_name || ' ' || a.middle_name) || ' ' || a.last_name), casefold(?2)) > 0)
        OR EXISTS (SELECT 1 FROM book_tags bt JOIN tags t ON t.id = bt.tag_id
                   WHERE bt.book_id = b.id AND instr(casefold(t.name), casefold(?2)) > 0)
        OR EXISTS (SELECT 1 FROM book_identifiers bi
@@ -88,7 +91,8 @@ FROM books b
 WHERE b.status = 'added'
   AND (?2 = '' OR instr(casefold(b.title), casefold(?2)) > 0
        OR EXISTS (SELECT 1 FROM book_authors ba JOIN authors a ON a.id = ba.author_id
-                  WHERE ba.book_id = b.id AND instr(casefold(a.name), casefold(?2)) > 0)
+                  WHERE ba.book_id = b.id
+                    AND instr(casefold(trim(a.first_name || ' ' || a.middle_name) || ' ' || a.last_name), casefold(?2)) > 0)
        OR EXISTS (SELECT 1 FROM book_tags bt JOIN tags t ON t.id = bt.tag_id
                   WHERE bt.book_id = b.id AND instr(casefold(t.name), casefold(?2)) > 0)
        OR EXISTS (SELECT 1 FROM book_identifiers bi
@@ -108,8 +112,26 @@ ORDER BY id DESC
 	bookMarkAdded = `
 UPDATE books SET status = 'added', created_at = ? WHERE id = ? AND status = 'pending'
 `
-	bookDeletePending = `
-DELETE FROM books WHERE id = ? AND status = 'pending'
+	bookUpdate = `
+UPDATE books
+SET title = :title, language = :language, publisher = :publisher, pub_year = :pub_year,
+    description = :description, file_hash = :file_hash
+WHERE id = :id
+`
+	bookDeleteAuthorLinksExcept = `
+DELETE FROM book_authors
+WHERE book_id = ?1 AND author_id NOT IN (SELECT value FROM json_each(?2))
+`
+	bookDeleteTagLinksExcept = `
+DELETE FROM book_tags
+WHERE book_id = ?1
+  AND tag_id NOT IN (SELECT id FROM tags WHERE name IN (SELECT value FROM json_each(?2)))
+`
+	bookDeleteIdentifiers = `
+DELETE FROM book_identifiers WHERE book_id = ?
+`
+	bookDelete = `
+DELETE FROM books WHERE id = ? AND status = ?
 `
 	passwordResetTokenCreate = `
 INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
@@ -135,27 +157,27 @@ SELECT EXISTS (SELECT 1 FROM read_status WHERE user_id = ? AND book_id = ?)
 DELETE FROM read_status WHERE user_id = ? AND book_id = ?
 `
 	userCreate = `
-INSERT INTO users (username, password_hash, role, can_upload, can_edit, can_delete)
-VALUES (:username, :password_hash, :role, :can_upload, :can_edit, :can_delete)
+INSERT INTO users (username, password_hash, role, can_add, can_edit, can_delete)
+VALUES (:username, :password_hash, :role, :can_add, :can_edit, :can_delete)
 `
 	userFindByID = `
-SELECT id, username, password_hash, role, can_upload, can_edit, can_delete, session_version
+SELECT id, username, password_hash, role, can_add, can_edit, can_delete, session_version
 FROM users
 WHERE id = ?
 `
 	userFindByUsername = `
-SELECT id, username, password_hash, role, can_upload, can_edit, can_delete, session_version
+SELECT id, username, password_hash, role, can_add, can_edit, can_delete, session_version
 FROM users
 WHERE username = ?
 `
 	userFindByRole = `
-SELECT id, username, password_hash, role, can_upload, can_edit, can_delete, session_version
+SELECT id, username, password_hash, role, can_add, can_edit, can_delete, session_version
 FROM users
 WHERE role = ?
 LIMIT 1
 `
 	userFindAll = `
-SELECT id, username, password_hash, role, can_upload, can_edit, can_delete, session_version
+SELECT id, username, password_hash, role, can_add, can_edit, can_delete, session_version
 FROM users
 ORDER BY username
 LIMIT ? OFFSET ?
@@ -165,7 +187,7 @@ SELECT COUNT(*) FROM users
 `
 	userUpdate = `
 UPDATE users
-SET role = ?, can_upload = ?, can_edit = ?, can_delete = ?
+SET role = ?, can_add = ?, can_edit = ?, can_delete = ?
 WHERE id = ?
 `
 	userChangePassword = `

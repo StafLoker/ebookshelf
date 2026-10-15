@@ -31,7 +31,7 @@ type Book struct {
 	Status      BookStatus   `db:"status"`
 	UploadedBy  *int64       `db:"uploaded_by"`
 	CreatedAt   string       `db:"created_at"`
-	Authors     []string     `db:"-"`
+	Authors     []Author     `db:"-"`
 	Tags        []string     `db:"-"`
 	Identifiers []Identifier `db:"-"`
 }
@@ -45,7 +45,7 @@ type BookSummary struct {
 	ID      int64    `db:"id"`
 	Title   string   `db:"title"`
 	Read    bool     `db:"read"`
-	Authors []string `db:"-"`
+	Authors []Author `db:"-"`
 }
 
 type BookFilter struct {

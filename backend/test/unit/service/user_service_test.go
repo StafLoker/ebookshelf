@@ -22,12 +22,12 @@ func TestUserService_Create_OKAndTokenWorks(t *testing.T) {
 	authSvc := service.NewAuthService(userRepo, tokenRepo, key)
 	admin := seedUser(t, userRepo, "boss", domain.RoleAdmin)
 
-	created, err := userSvc.Create(ctx, admin.ID, dto.CreateUserRequest{Username: "bob", Role: domain.RoleUser, CanUpload: true})
+	created, err := userSvc.Create(ctx, admin.ID, dto.CreateUserRequest{Username: "bob", Role: domain.RoleUser, CanAdd: true})
 	require.NoError(t, err)
 	errReset := authSvc.ResetPassword(ctx, created.Token, newPassword)
 	_, errLogin := authSvc.Login(ctx, "bob", newPassword)
 
-	assert.True(t, created.User.CanUpload)
+	assert.True(t, created.User.CanAdd)
 	assert.NoError(t, errReset)
 	assert.NoError(t, errLogin)
 }
@@ -54,6 +54,18 @@ func TestUserService_Create_DuplicateUsername(t *testing.T) {
 	assert.ErrorIs(t, err, apperrors.ErrUsernameTaken)
 }
 
+func TestUserService_CreateRoot_Twice(t *testing.T) {
+	db := testutil.OpenTempDB(t)
+	svc := service.NewUserService(repository.NewUserRepository(db), repository.NewPasswordResetTokenRepository(db))
+
+	token, errFirst := svc.CreateRoot(ctx, "root")
+	_, errSecond := svc.CreateRoot(ctx, "root2")
+
+	require.NoError(t, errFirst)
+	assert.NotEmpty(t, token)
+	assert.ErrorIs(t, errSecond, apperrors.ErrRootExists)
+}
+
 func TestUserService_Update_RoleByAdminDenied(t *testing.T) {
 	db := testutil.OpenTempDB(t)
 	userRepo := repository.NewUserRepository(db)
@@ -65,16 +77,4 @@ func TestUserService_Update_RoleByAdminDenied(t *testing.T) {
 	_, err := svc.Update(ctx, admin.ID, bob.ID, dto.UpdateUserRequest{Role: &role})
 
 	assert.ErrorIs(t, err, apperrors.ErrForbidden)
-}
-
-func TestUserService_CreateRoot_Twice(t *testing.T) {
-	db := testutil.OpenTempDB(t)
-	svc := service.NewUserService(repository.NewUserRepository(db), repository.NewPasswordResetTokenRepository(db))
-
-	token, errFirst := svc.CreateRoot(ctx, "root")
-	_, errSecond := svc.CreateRoot(ctx, "root2")
-
-	require.NoError(t, errFirst)
-	assert.NotEmpty(t, token)
-	assert.ErrorIs(t, errSecond, apperrors.ErrRootExists)
 }

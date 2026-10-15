@@ -3,7 +3,9 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 
@@ -11,7 +13,10 @@ import (
 	apperrors "ebookshelf/internal/errors"
 )
 
-const maxBodyBytes = 1 << 20 // 1 MB
+const (
+	maxBodyBytes = 1 << 20 // 1 MB
+	uploadField  = "file"
+)
 
 func writeJSON(w http.ResponseWriter, r *http.Request, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -79,15 +84,37 @@ func pathID(r *http.Request) (int64, error) {
 
 // an absent key is not an error: it returns 0, meaning no filter
 func queryID(r *http.Request, key string) (int64, error) {
-	var (
-		id  int64
-		err error
-	)
-
-	if value := r.URL.Query().Get(key); value != "" {
-		if id, err = strconv.ParseInt(value, 10, 64); err != nil {
-			err = apperrors.InvalidRequest("invalid " + key + " filter")
-		}
+	value := r.URL.Query().Get(key)
+	if value == "" {
+		return 0, nil
 	}
-	return id, err
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, apperrors.InvalidRequest("invalid " + key + " filter")
+	}
+	return id, nil
+}
+
+// the first part of a multipart body, which must be the file field
+func filePart(r *http.Request) (*multipart.Part, error) {
+	missing := apperrors.InvalidRequest("multipart field \"" + uploadField + "\" with a file is required")
+
+	reader, err := r.MultipartReader()
+	if errors.Is(err, http.ErrNotMultipart) || errors.Is(err, http.ErrMissingBoundary) {
+		return nil, missing
+	}
+	if err != nil {
+		return nil, err
+	}
+	part, err := reader.NextPart()
+	if errors.Is(err, io.EOF) {
+		return nil, missing
+	}
+	if err != nil {
+		return nil, err
+	}
+	if part.FormName() != uploadField || part.FileName() == "" {
+		return nil, missing
+	}
+	return part, nil
 }

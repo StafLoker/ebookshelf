@@ -2,12 +2,16 @@ package service
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -19,7 +23,11 @@ import (
 	"ebookshelf/internal/repository"
 )
 
-const invalidFileNameChars = `/\:*?"<>|`
+const (
+	invalidFileNameChars = `/\:*?"<>|`
+	libraryRules         = "a book in the library needs a title and an author with a last name; " +
+		"a first name is one word and a year is 1 to 9999"
+)
 
 type BookService struct {
 	bookRepo repository.BookRepository
@@ -31,152 +39,84 @@ func NewBookService(bookRepo repository.BookRepository, readRepo repository.Read
 	return &BookService{bookRepo: bookRepo, readRepo: readRepo, files: files}
 }
 
-// ---- catalog: books already added to the library ----
+// ---- create ----
+
+func (s *BookService) Add(ctx context.Context, actorID int64, filename string, src io.Reader) (dto.BookResponse, error) {
+	var (
+		ext = fileExt(filename)
+		tmp = s.files.NewTmpPath(ext)
+	)
+	// once the book is stored tmp is gone, so this only removes a failed upload
+	defer func() {
+		if rmErr := s.files.Remove(tmp); rmErr != nil {
+			slog.WarnContext(ctx, "add book: cleanup failed", "err", rmErr)
+		}
+	}()
+
+	if err := s.files.Save(ctx, tmp, src, domain.BookFilePolicy); err != nil {
+		return dto.BookResponse{}, err
+	}
+
+	hash, err := s.files.Hash(tmp)
+	if err != nil {
+		slog.ErrorContext(ctx, "add book: hash failed", "err", err)
+		return dto.BookResponse{}, apperrors.Internal("failed to save pending book")
+	}
+
+	if err = s.duplicateOf(ctx, hash); err != nil {
+		return dto.BookResponse{}, err
+	}
+
+	meta, err := s.readMetadata(ctx, tmp)
+	if err != nil {
+		return dto.BookResponse{}, err
+	}
+
+	book := bookFromMetadata(meta, ext)
+	book.FileHash, book.SourceHash = hash, hash
+	book.Status, book.UploadedBy = domain.BookPending, &actorID
+	book.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err = s.insertPending(ctx, book, tmp); err != nil {
+		return dto.BookResponse{}, err
+	}
+
+	s.storeCover(ctx, book.ID, meta.Cover)
+	slog.InfoContext(ctx, "pending book received", "book_id", book.ID)
+	return toBookResponse(book, false, findCoverPath(s.files, book.ID) != ""), nil
+}
+
+// ---- read ----
 
 func (s *BookService) List(ctx context.Context, userID int64, req dto.BookFilterRequest, page, pageSize int) (domain.Page[dto.BookSummaryResponse], error) {
-	var (
-		result domain.Page[dto.BookSummaryResponse]
-		books  domain.Page[domain.BookSummary]
-		err    error
-		filter = domain.BookFilter{
-			Query:    strings.TrimSpace(req.Query),
-			AuthorID: req.AuthorID,
-			TagID:    req.TagID,
-			Language: strings.ToLower(req.Language),
-			Read:     domain.ReadFilter(req.Read),
-			Sort:     domain.BookSort(req.Sort),
-		}
-	)
+	filter := domain.BookFilter{
+		Query:    strings.TrimSpace(req.Query),
+		AuthorID: req.AuthorID,
+		TagID:    req.TagID,
+		Language: strings.ToLower(req.Language),
+		Read:     domain.ReadFilter(req.Read),
+		Sort:     domain.BookSort(req.Sort),
+	}
 
 	if !filter.Valid() {
-		return result, apperrors.InvalidRequest("read must be read or unread and sort must be created or title")
+		return domain.Page[dto.BookSummaryResponse]{}, apperrors.InvalidRequest("read must be read or unread and sort must be created or title")
 	}
 
-	if books, err = s.bookRepo.FindAll(ctx, userID, filter, page, pageSize); err != nil {
+	books, err := s.bookRepo.FindAll(ctx, userID, filter, page, pageSize)
+	if err != nil {
 		slog.ErrorContext(ctx, "list books failed", "err", err)
-		err = apperrors.Internal("failed to list books")
-	} else {
-		items := make([]dto.BookSummaryResponse, len(books.Items))
-		for i, b := range books.Items {
-			items[i] = dto.BookSummaryResponse{ID: b.ID, Title: b.Title, Authors: emptyIfNil(b.Authors), Read: b.Read}
-		}
-		result = domain.NewPage(items, books.Page, books.PageSize, books.Total)
+		return domain.Page[dto.BookSummaryResponse]{}, apperrors.Internal("failed to list books")
 	}
-	return result, err
+
+	items := make([]dto.BookSummaryResponse, len(books.Items))
+	for i, b := range books.Items {
+		items[i] = dto.BookSummaryResponse{ID: b.ID, Title: b.Title, Authors: toAuthors(b.Authors), Read: b.Read}
+	}
+	return domain.NewPage(items, books.Page, books.PageSize, books.Total), nil
 }
 
-func (s *BookService) Get(ctx context.Context, userID, id int64) (dto.BookResponse, error) {
-	var (
-		resp dto.BookResponse
-		read bool
-	)
-
-	book, err := s.findBook(ctx, id)
-	if err == nil {
-		if read, err = s.readRepo.Exists(ctx, userID, id); err != nil {
-			slog.ErrorContext(ctx, "get book: read status failed", "book_id", id, "err", err)
-			err = apperrors.Internal("failed to get book")
-		}
-	}
-	if err == nil {
-		resp = toBookResponse(book, read, findCoverPath(s.files, id) != "")
-	}
-	return resp, err
-}
-
-func (s *BookService) File(ctx context.Context, id int64) (dto.FileResponse, error) {
-	var file dto.FileResponse
-
-	book, err := s.findBook(ctx, id)
-	if err == nil {
-		file = dto.FileResponse{Path: s.files.Path(s.files.BookPath(id, book.Format)), Name: downloadName(book), Hash: book.FileHash}
-	}
-	return file, err
-}
-
-func (s *BookService) Cover(ctx context.Context, id int64) (string, error) {
-	var abs string
-
-	_, err := s.findBook(ctx, id)
-	if err == nil {
-		if cover := findCoverPath(s.files, id); cover != "" {
-			abs = s.files.Path(cover)
-		} else {
-			err = apperrors.BookNotFound("cover not found")
-		}
-	}
-	return abs, err
-}
-
-func (s *BookService) MarkRead(ctx context.Context, userID, id int64) error {
-	_, err := s.findBook(ctx, id)
-	if err == nil {
-		if err = s.readRepo.Create(ctx, userID, id); err != nil {
-			slog.ErrorContext(ctx, "mark read failed", "book_id", id, "err", err)
-			err = apperrors.Internal("failed to mark book as read")
-		}
-	}
-	return err
-}
-
-func (s *BookService) MarkUnread(ctx context.Context, userID, id int64) error {
-	_, err := s.findBook(ctx, id)
-	if err == nil {
-		if err = s.readRepo.Delete(ctx, userID, id); err != nil {
-			slog.ErrorContext(ctx, "mark unread failed", "book_id", id, "err", err)
-			err = apperrors.Internal("failed to mark book as unread")
-		}
-	}
-	return err
-}
-
-// ---- pending books: uploaded, waiting for the user to add them ----
-
-func (s *BookService) Upload(ctx context.Context, actorID int64, filename string, src io.Reader) (dto.BookResponse, error) {
-	var (
-		resp dto.BookResponse
-		meta *formats.Metadata
-		book *domain.Book
-		hash string
-		ext  = fileExt(filename)
-		tmp  = s.files.NewTmpPath(ext)
-	)
-
-	err := s.files.Save(ctx, tmp, src, domain.BookFilePolicy)
-	if err == nil {
-		if hash, err = s.files.Hash(tmp); err != nil {
-			slog.ErrorContext(ctx, "upload: hash failed", "err", err)
-			err = apperrors.Internal("failed to save pending book")
-		}
-	}
-	if err == nil {
-		err = s.duplicateOf(ctx, hash)
-	}
-	if err == nil {
-		meta, err = s.readMetadata(ctx, tmp)
-	}
-	if err == nil {
-		book = bookFromMetadata(meta, ext)
-		book.FileHash, book.SourceHash = hash, hash
-		book.Status, book.UploadedBy = domain.BookPending, &actorID
-		book.CreatedAt = time.Now().UTC().Format(time.RFC3339)
-		err = s.insertPending(ctx, book, tmp)
-	}
-	if err == nil {
-		s.storeCover(ctx, book.ID, meta.Cover)
-		resp = toBookResponse(book, false, findCoverPath(s.files, book.ID) != "")
-		slog.InfoContext(ctx, "pending book received", "book_id", book.ID)
-	} else if rmErr := s.files.Remove(tmp); rmErr != nil {
-		slog.WarnContext(ctx, "upload: cleanup failed", "err", rmErr)
-	}
-	return resp, err
-}
-
+// the pending books of the actor, or of everyone for admin and root
 func (s *BookService) ListPending(ctx context.Context, actor dto.UserResponse) ([]dto.BookSummaryResponse, error) {
-	var (
-		items      []dto.BookSummaryResponse
-		uploadedBy int64
-	)
+	var uploadedBy int64
 
 	if !actor.Role.IsStaff() {
 		uploadedBy = actor.ID
@@ -184,112 +124,224 @@ func (s *BookService) ListPending(ctx context.Context, actor dto.UserResponse) (
 	books, err := s.bookRepo.FindPending(ctx, uploadedBy)
 	if err != nil {
 		slog.ErrorContext(ctx, "list pending books failed", "err", err)
-		err = apperrors.Internal("failed to list pending books")
-	} else {
-		items = make([]dto.BookSummaryResponse, len(books))
-		for i, b := range books {
-			items[i] = dto.BookSummaryResponse{ID: b.ID, Title: b.Title, Authors: emptyIfNil(b.Authors)}
-		}
+		return nil, apperrors.Internal("failed to list pending books")
 	}
-	return items, err
+
+	items := make([]dto.BookSummaryResponse, len(books))
+	for i, b := range books {
+		items[i] = dto.BookSummaryResponse{ID: b.ID, Title: b.Title, Authors: toAuthors(b.Authors)}
+	}
+	return items, nil
 }
 
-func (s *BookService) GetPending(ctx context.Context, actor dto.UserResponse, id int64) (dto.BookResponse, error) {
-	var resp dto.BookResponse
-
-	book, err := s.findPending(ctx, actor, id)
-	if err == nil {
-		resp = toBookResponse(book, false, findCoverPath(s.files, id) != "")
+func (s *BookService) Get(ctx context.Context, actor dto.UserResponse, id int64) (dto.BookResponse, error) {
+	book, err := s.find(ctx, actor, id)
+	if err != nil {
+		return dto.BookResponse{}, err
 	}
-	return resp, err
+
+	read, err := s.readRepo.Exists(ctx, actor.ID, id)
+	if err != nil {
+		slog.ErrorContext(ctx, "get book: read status failed", "book_id", id, "err", err)
+		return dto.BookResponse{}, apperrors.Internal("failed to get book")
+	}
+	return toBookResponse(book, read, findCoverPath(s.files, id) != ""), nil
 }
 
-func (s *BookService) DiscardPending(ctx context.Context, actor dto.UserResponse, id int64) error {
-	_, err := s.findPending(ctx, actor, id)
-	if err == nil {
-		if err = s.bookRepo.DeletePending(ctx, id); err != nil {
-			slog.ErrorContext(ctx, "discard pending book failed", "book_id", id, "err", err)
-			err = apperrors.Internal("failed to discard pending book")
-		}
+func (s *BookService) File(ctx context.Context, actor dto.UserResponse, id int64) (dto.FileResponse, error) {
+	book, err := s.find(ctx, actor, id)
+	if err != nil {
+		return dto.FileResponse{}, err
 	}
-	if err == nil {
-		s.removeFiles(ctx, id)
-		slog.InfoContext(ctx, "pending book discarded", "book_id", id)
-	}
-	return err
+	return dto.FileResponse{Path: s.files.Path(s.files.BookPath(id, book.Format)), Name: downloadName(book), Hash: book.FileHash}, nil
 }
 
-func (s *BookService) CommitPending(ctx context.Context, actor dto.UserResponse, id int64) (dto.BookResponse, error) {
-	var resp dto.BookResponse
+func (s *BookService) Cover(ctx context.Context, actor dto.UserResponse, id int64) (string, error) {
+	if _, err := s.find(ctx, actor, id); err != nil {
+		return "", err
+	}
 
-	book, err := s.findPending(ctx, actor, id)
-	if err == nil {
-		book.Status, book.CreatedAt = domain.BookAdded, time.Now().UTC().Format(time.RFC3339)
-		if err = s.bookRepo.MarkAdded(ctx, id, book.CreatedAt); err != nil {
-			slog.ErrorContext(ctx, "commit pending book failed", "book_id", id, "err", err)
-			err = apperrors.Internal("failed to add book")
-		}
+	cover := findCoverPath(s.files, id)
+	if cover == "" {
+		return "", apperrors.BookNotFound("cover not found")
 	}
-	if err == nil {
-		resp = toBookResponse(book, false, findCoverPath(s.files, id) != "")
-		slog.InfoContext(ctx, "book added", "book_id", id)
-	}
-	return resp, err
+	return s.files.Path(cover), nil
 }
 
-func (s *BookService) findPending(ctx context.Context, actor dto.UserResponse, id int64) (*domain.Book, error) {
+// ---- update ----
+
+func (s *BookService) Update(ctx context.Context, actor dto.UserResponse, id int64, req dto.UpdateBookRequest) (dto.BookResponse, error) {
+	book, err := s.findFor(ctx, actor, id, domain.PermEdit)
+	if err != nil {
+		return dto.BookResponse{}, err
+	}
+
+	if err = s.edit(ctx, book, &req, nil); err != nil {
+		return dto.BookResponse{}, err
+	}
+	return s.Get(ctx, actor, id)
+}
+
+func (s *BookService) SetCover(ctx context.Context, actor dto.UserResponse, id int64, src io.Reader) (dto.BookResponse, error) {
+	book, err := s.findFor(ctx, actor, id, domain.PermEdit)
+	if err != nil {
+		return dto.BookResponse{}, err
+	}
+
+	cover, err := readCover(src)
+	if err != nil {
+		return dto.BookResponse{}, err
+	}
+
+	if err = s.edit(ctx, book, nil, cover); err != nil {
+		return dto.BookResponse{}, err
+	}
+	return s.Get(ctx, actor, id)
+}
+
+// ---- delete ----
+
+func (s *BookService) Delete(ctx context.Context, actor dto.UserResponse, id int64) error {
+	book, err := s.findFor(ctx, actor, id, domain.PermDelete)
+	if err != nil {
+		return err
+	}
+
+	if err = s.bookRepo.Delete(ctx, id, book.Status); err != nil {
+		slog.ErrorContext(ctx, "delete book failed", "book_id", id, "err", err)
+		return apperrors.Internal("failed to delete book")
+	}
+	s.removeFiles(ctx, id)
+	slog.InfoContext(ctx, "book deleted", "book_id", id)
+	return nil
+}
+
+// ---- other actions ----
+
+func (s *BookService) Commit(ctx context.Context, actor dto.UserResponse, id int64) (dto.BookResponse, error) {
+	book, err := s.find(ctx, actor, id)
+	if err != nil {
+		return dto.BookResponse{}, err
+	}
+	if book.Status != domain.BookPending {
+		return dto.BookResponse{}, apperrors.BookNotFound("pending book not found")
+	}
+
+	book.Status, book.CreatedAt = domain.BookAdded, time.Now().UTC().Format(time.RFC3339)
+	err = s.bookRepo.MarkAdded(ctx, id, book.CreatedAt)
+	if errors.Is(err, repository.ErrInvalid) {
+		return dto.BookResponse{}, apperrors.InvalidRequest(libraryRules)
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "commit pending book failed", "book_id", id, "err", err)
+		return dto.BookResponse{}, apperrors.Internal("failed to add book")
+	}
+
+	slog.InfoContext(ctx, "book added", "book_id", id)
+	return toBookResponse(book, false, findCoverPath(s.files, id) != ""), nil
+}
+
+func (s *BookService) MarkRead(ctx context.Context, actor dto.UserResponse, id int64) error {
+	book, err := s.find(ctx, actor, id)
+	if err != nil {
+		return err
+	}
+	if book.Status != domain.BookAdded {
+		return apperrors.BookNotFound("book not found")
+	}
+
+	if err := s.readRepo.Create(ctx, actor.ID, id); err != nil {
+		slog.ErrorContext(ctx, "mark read failed", "book_id", id, "err", err)
+		return apperrors.Internal("failed to mark book as read")
+	}
+	return nil
+}
+
+func (s *BookService) MarkUnread(ctx context.Context, actor dto.UserResponse, id int64) error {
+	book, err := s.find(ctx, actor, id)
+	if err != nil {
+		return err
+	}
+	if book.Status != domain.BookAdded {
+		return apperrors.BookNotFound("book not found")
+	}
+
+	if err := s.readRepo.Delete(ctx, actor.ID, id); err != nil {
+		slog.ErrorContext(ctx, "mark unread failed", "book_id", id, "err", err)
+		return apperrors.Internal("failed to mark book as unread")
+	}
+	return nil
+}
+
+// ---- helpers ----
+
+// a pending book exists only for who uploaded it, admin and root
+func (s *BookService) find(ctx context.Context, actor dto.UserResponse, id int64) (*domain.Book, error) {
 	book, err := s.bookRepo.FindByID(ctx, id)
-	switch {
-	case err == nil && book.Status == domain.BookPending && (actor.Role.IsStaff() || book.UploadedBy != nil && *book.UploadedBy == actor.ID):
-	case err == nil || errors.Is(err, sql.ErrNoRows):
-		err = apperrors.BookNotFound("pending book not found")
-	default:
-		slog.ErrorContext(ctx, "find pending book failed", "book_id", id, "err", err)
-		err = apperrors.Internal("failed to find pending book")
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		slog.ErrorContext(ctx, "find book failed", "book_id", id, "err", err)
+		return book, apperrors.Internal("failed to find book")
 	}
-	return book, err
+	if err != nil || book.Status == domain.BookPending && !actor.Role.IsStaff() && (book.UploadedBy == nil || *book.UploadedBy != actor.ID) {
+		return book, apperrors.BookNotFound("book not found")
+	}
+	return book, nil
+}
+
+// a book in the library needs the permission of the action; a pending one only the permission to add books
+func (s *BookService) findFor(ctx context.Context, actor dto.UserResponse, id int64, perm domain.Permission) (*domain.Book, error) {
+	book, err := s.find(ctx, actor, id)
+	if err != nil {
+		return book, err
+	}
+
+	if book.Status == domain.BookPending {
+		perm = domain.PermAdd
+	}
+	user := domain.User{Role: actor.Role, CanAdd: actor.CanAdd, CanEdit: actor.CanEdit, CanDelete: actor.CanDelete}
+	if !user.Allowed(perm) {
+		return book, apperrors.Forbidden("permission required: " + string(perm))
+	}
+	return book, nil
 }
 
 // the row and the file move commit together: a failed move or commit leaves neither row nor folder
 func (s *BookService) insertPending(ctx context.Context, book *domain.Book, tmp string) error {
 	err := s.bookRepo.Create(ctx, book, func(id int64) error {
-		err := s.files.Move(tmp, s.files.BookPath(id, book.Format))
-		if err == nil {
-			err = s.files.Link(s.files.BookPath(id, book.Format), s.files.OriginalPath(id, book.Format))
+		if err := s.files.Move(tmp, s.files.BookPath(id, book.Format)); err != nil {
+			return err
 		}
-		return err
+		return s.files.Link(s.files.BookPath(id, book.Format), s.files.OriginalPath(id, book.Format))
 	})
-	if err != nil && book.ID != 0 {
-		if rmErr := s.files.Remove(s.files.BookDir(book.ID)); rmErr != nil {
-			slog.WarnContext(ctx, "upload: remove folder failed", "book_id", book.ID, "err", rmErr)
+	if err != nil {
+		if book.ID != 0 {
+			if rmErr := s.files.Remove(s.files.BookDir(book.ID)); rmErr != nil {
+				slog.WarnContext(ctx, "add book: remove folder failed", "book_id", book.ID, "err", rmErr)
+			}
 		}
-	}
-	switch {
-	case err == nil:
-	case errors.Is(err, repository.ErrConflict):
-		if err = s.duplicateOf(ctx, book.FileHash); err == nil {
-			err = apperrors.Internal("failed to add book")
+		if errors.Is(err, repository.ErrConflict) {
+			if dupErr := s.duplicateOf(ctx, book.FileHash); dupErr != nil {
+				return dupErr
+			}
+			return apperrors.Internal("failed to add book")
 		}
-	default:
-		slog.ErrorContext(ctx, "upload: add book failed", "err", err)
-		err = apperrors.Internal("failed to save pending book")
+		slog.ErrorContext(ctx, "add book failed", "err", err)
+		return apperrors.Internal("failed to save pending book")
 	}
-	return err
+	return nil
 }
 
 // returns BookDuplicate when a book already has this hash and nil when none does
 func (s *BookService) duplicateOf(ctx context.Context, fileHash string) error {
-	existing, err := s.bookRepo.FindByFileHash(ctx, fileHash)
-	switch {
-	case err == nil:
-		err = apperrors.BookDuplicate("book already exists", existing.ID)
-	case errors.Is(err, sql.ErrNoRows):
-		err = nil
-	default:
-		slog.ErrorContext(ctx, "find duplicate failed", "err", err)
-		err = apperrors.Internal("failed to check duplicates")
+	existing, err := s.bookRepo.FindByHash(ctx, fileHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
 	}
-	return err
+	if err != nil {
+		slog.ErrorContext(ctx, "find duplicate failed", "err", err)
+		return apperrors.Internal("failed to check duplicates")
+	}
+	return apperrors.BookDuplicate("book already exists", existing.ID)
 }
 
 // the extension was already checked against BookFilePolicy, so formats.For finds a reader
@@ -297,18 +349,217 @@ func (s *BookService) readMetadata(ctx context.Context, relPath string) (*format
 	meta, err := formats.For(fileExt(relPath)).Read(s.files.Path(relPath))
 	if err != nil {
 		slog.WarnContext(ctx, "read book failed", "err", err)
-		err = apperrors.UnreadableFile("file is corrupt or not a valid book")
+		return meta, apperrors.UnreadableFile("file is corrupt or not a valid book")
 	}
-	return meta, err
+	return meta, nil
 }
 
 // a cover that breaks the policy is dropped: the book is still valid without it
 func (s *BookService) storeCover(ctx context.Context, id int64, data []byte) {
-	if ext := detectCoverExt(data); ext != "" {
-		if err := s.files.Save(ctx, s.files.CoverPath(id, ext), bytes.NewReader(data), domain.CoverPolicy); err != nil {
-			slog.WarnContext(ctx, "upload: cover dropped", "book_id", id, "err", err)
+	if detectCoverExt(data) != "" {
+		if err := s.replaceCover(ctx, id, data); err != nil {
+			slog.WarnContext(ctx, "add book: cover dropped", "book_id", id, "err", err)
 		}
 	}
+}
+
+// the copy is built in tmp/ and moved over the book inside the database transaction, as in the upload,
+// so a rejected change leaves file and row as they were. A nil req keeps the metadata
+func (s *BookService) edit(ctx context.Context, book *domain.Book, req *dto.UpdateBookRequest, cover []byte) error {
+	var (
+		next   = *book
+		format = formats.For(book.Format)
+		rel    = s.files.BookPath(book.ID, book.Format)
+		tmp    = s.files.NewTmpPath(book.Format)
+	)
+
+	if req != nil {
+		if err := applyUpdate(&next, *req); err != nil {
+			return err
+		}
+	}
+	if cover == nil && reflect.DeepEqual(*book, next) {
+		return nil
+	}
+
+	defer func() {
+		if rmErr := s.files.Remove(tmp); rmErr != nil {
+			slog.WarnContext(ctx, "edit: cleanup failed", "err", rmErr)
+		}
+	}()
+
+	if err := format.Write(s.files.Path(rel), s.files.Path(tmp), metadataFromBook(&next, cover)); err != nil {
+		slog.ErrorContext(ctx, "write book file failed", "book_id", book.ID, "err", err)
+		return apperrors.FileWriteFailed("failed to write the book file")
+	}
+	if _, err := format.Read(s.files.Path(tmp)); err != nil {
+		slog.ErrorContext(ctx, "write book file failed", "book_id", book.ID, "err", err)
+		return apperrors.FileWriteFailed("failed to write the book file")
+	}
+
+	var err error
+	if next.FileHash, err = s.files.Hash(tmp); err != nil {
+		slog.ErrorContext(ctx, "update book failed", "book_id", book.ID, "err", err)
+		return apperrors.Internal("failed to update book")
+	}
+
+	err = s.bookRepo.Update(ctx, &next, func() error { return s.files.Move(tmp, rel) })
+	if errors.Is(err, repository.ErrInvalid) {
+		return apperrors.InvalidRequest(libraryRules)
+	}
+	if errors.Is(err, repository.ErrConflict) {
+		if dupErr := s.duplicateOf(ctx, next.FileHash); dupErr != nil {
+			return dupErr
+		}
+		return apperrors.Internal("failed to update book")
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "update book failed", "book_id", book.ID, "err", err)
+		return apperrors.Internal("failed to update book")
+	}
+
+	if cover != nil {
+		if err = s.replaceCover(ctx, book.ID, cover); err != nil {
+			return err
+		}
+	}
+	slog.InfoContext(ctx, "book edited", "book_id", book.ID)
+	return nil
+}
+
+// saved in tmp/ and moved into place, so a failed save keeps the old cover
+func (s *BookService) replaceCover(ctx context.Context, id int64, data []byte) error {
+	var (
+		ext = detectCoverExt(data)
+		tmp = s.files.NewTmpPath(ext)
+	)
+
+	defer func() {
+		if rmErr := s.files.Remove(tmp); rmErr != nil {
+			slog.WarnContext(ctx, "cover: cleanup failed", "err", rmErr)
+		}
+	}()
+
+	if err := s.files.Save(ctx, tmp, bytes.NewReader(data), domain.CoverPolicy); err != nil {
+		return err
+	}
+	if err := s.files.Move(tmp, s.files.CoverPath(id, ext)); err != nil {
+		slog.ErrorContext(ctx, "save cover failed", "book_id", id, "err", err)
+		return apperrors.Internal("failed to save cover")
+	}
+
+	for _, old := range domain.CoverPolicy.AllowedExts {
+		if old != ext {
+			if rmErr := s.files.Remove(s.files.CoverPath(id, old)); rmErr != nil {
+				slog.WarnContext(ctx, "remove old cover failed", "book_id", id, "err", rmErr)
+			}
+		}
+	}
+	return nil
+}
+
+// the request replaces the metadata of book; the rules of a valid book live in the schema, which rejects the update
+func applyUpdate(book *domain.Book, req dto.UpdateBookRequest) error {
+	book.Title = strings.TrimSpace(req.Title)
+	book.Language = nullIfEmpty(formats.ParseLanguage(req.Language))
+	book.Publisher = nullIfEmpty(strings.TrimSpace(req.Publisher))
+	book.Description = nullIfEmpty(strings.TrimSpace(req.Description))
+	book.PubYear = nil
+	if req.PubYear != 0 {
+		book.PubYear = &req.PubYear
+	}
+	book.Tags = cleanNames(req.Tags, book.Tags)
+	book.Authors = cleanAuthors(req.Authors, book.Authors)
+	if book.Language == nil && strings.TrimSpace(req.Language) != "" {
+		return apperrors.InvalidRequest("language must be an ISO 639 code")
+	}
+
+	var err error
+	book.Identifiers, err = cleanIdentifiers(req.Identifiers)
+	return err
+}
+
+// an empty row is dropped; an author already on the book stays as stored: renaming, case included, is done on the author page
+func cleanAuthors(list []dto.Author, current []domain.Author) []domain.Author {
+	var authors []domain.Author
+
+	for _, r := range list {
+		a := domain.Author{FirstName: strings.TrimSpace(r.FirstName), MiddleName: strings.TrimSpace(r.MiddleName), LastName: strings.TrimSpace(r.LastName)}
+		same := func(b domain.Author) bool { return strings.EqualFold(a.SortName(), b.SortName()) }
+		if i := slices.IndexFunc(current, same); i >= 0 {
+			a = current[i]
+		}
+		if a.Name() != "" && !slices.ContainsFunc(authors, same) {
+			authors = append(authors, a)
+		}
+	}
+	return authors
+}
+
+// collapses spaces and drops empty and repeated names; a tag already on the book keeps its spelling
+func cleanNames(list, current []string) []string {
+	var names []string
+
+	for _, name := range list {
+		name = strings.Join(strings.Fields(name), " ")
+		same := func(n string) bool { return strings.EqualFold(n, name) }
+		if i := slices.IndexFunc(current, same); i >= 0 {
+			name = current[i]
+		}
+		if name != "" && !slices.ContainsFunc(names, same) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// normalized like the ones read from a file and sorted like the database returns them
+func cleanIdentifiers(list []dto.Identifier) ([]domain.Identifier, error) {
+	var (
+		ids []domain.Identifier
+		err error
+	)
+
+	for i := 0; err == nil && i < len(list); i++ {
+		parsed := formats.ParseIdentifiers(list[i].Type, list[i].Value)
+		if len(parsed) == 0 {
+			err = apperrors.InvalidRequest("invalid identifier of type " + list[i].Type)
+		}
+		for _, id := range parsed {
+			if !slices.Contains(ids, id) {
+				ids = append(ids, id)
+			}
+		}
+	}
+	slices.SortFunc(ids, func(a, b domain.Identifier) int {
+		return cmp.Or(strings.Compare(a.Type, b.Type), strings.Compare(a.Value, b.Value))
+	})
+	return ids, err
+}
+
+func readCover(src io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(src, domain.CoverPolicy.MaxSizeBytes+1))
+	switch {
+	case err != nil:
+		err = apperrors.InvalidRequest("failed to read the cover")
+	case int64(len(data)) > domain.CoverPolicy.MaxSizeBytes:
+		err = apperrors.FileTooLarge(fmt.Sprintf("cover must not exceed %d MB", domain.CoverPolicy.MaxSizeBytes/domain.MB))
+	case detectCoverExt(data) == "":
+		err = apperrors.UnsupportedFormat("cover must be a jpg or png image")
+	}
+	return data, err
+}
+
+func detectCoverExt(data []byte) string {
+	var ext string
+
+	switch http.DetectContentType(data) {
+	case "image/jpeg":
+		ext = domain.CoverJPG
+	case "image/png":
+		ext = domain.CoverPNG
+	}
+	return ext
 }
 
 func (s *BookService) removeFiles(ctx context.Context, id int64) {
@@ -321,6 +572,37 @@ func (s *BookService) removeFiles(ctx context.Context, id int64) {
 			slog.WarnContext(ctx, "remove book files failed", "path", rel, "err", err)
 		}
 	}
+}
+
+func findCoverPath(files *FileService, id int64) string {
+	var (
+		found string
+		exts  = domain.CoverPolicy.AllowedExts
+	)
+
+	for i := 0; found == "" && i < len(exts); i++ {
+		if p := files.CoverPath(id, exts[i]); files.Exists(p) {
+			found = p
+		}
+	}
+	return found
+}
+
+func metadataFromBook(b *domain.Book, cover []byte) *formats.Metadata {
+	meta := &formats.Metadata{
+		Title:       b.Title,
+		Language:    textOf(b.Language),
+		Publisher:   textOf(b.Publisher),
+		Description: textOf(b.Description),
+		Authors:     b.Authors,
+		Tags:        b.Tags,
+		Identifiers: b.Identifiers,
+		Cover:       cover,
+	}
+	if b.PubYear != nil {
+		meta.Year = *b.PubYear
+	}
+	return meta
 }
 
 func bookFromMetadata(m *formats.Metadata, ext string) *domain.Book {
@@ -340,46 +622,6 @@ func bookFromMetadata(m *formats.Metadata, ext string) *domain.Book {
 	return book
 }
 
-func detectCoverExt(data []byte) string {
-	var ext string
-
-	switch http.DetectContentType(data) {
-	case "image/jpeg":
-		ext = domain.CoverJPG
-	case "image/png":
-		ext = domain.CoverPNG
-	}
-	return ext
-}
-
-// ---- helpers shared by both ----
-
-func (s *BookService) findBook(ctx context.Context, id int64) (*domain.Book, error) {
-	book, err := s.bookRepo.FindByID(ctx, id)
-	switch {
-	case err == nil && book.Status != domain.BookAdded, errors.Is(err, sql.ErrNoRows):
-		err = apperrors.BookNotFound("book not found")
-	case err != nil:
-		slog.ErrorContext(ctx, "find book failed", "book_id", id, "err", err)
-		err = apperrors.Internal("failed to find book")
-	}
-	return book, err
-}
-
-func findCoverPath(files *FileService, id int64) string {
-	var (
-		found string
-		exts  = domain.CoverPolicy.AllowedExts
-	)
-
-	for i := 0; found == "" && i < len(exts); i++ {
-		if p := files.CoverPath(id, exts[i]); files.Exists(p) {
-			found = p
-		}
-	}
-	return found
-}
-
 func toBookResponse(b *domain.Book, read, hasCover bool) dto.BookResponse {
 	return dto.BookResponse{ID: b.ID, Status: b.Status, Read: read, CreatedAt: b.CreatedAt, BookMetadataResponse: toMetadataResponse(b, hasCover)}
 }
@@ -392,25 +634,37 @@ func toMetadataResponse(b *domain.Book, hasCover bool) dto.BookMetadataResponse 
 		PubYear:     b.PubYear,
 		Description: b.Description,
 		Format:      b.Format,
-		Authors:     emptyIfNil(b.Authors),
+		Authors:     toAuthors(b.Authors),
 		Tags:        emptyIfNil(b.Tags),
-		Identifiers: toIdentifierResponses(b.Identifiers),
+		Identifiers: toIdentifiers(b.Identifiers),
 		HasCover:    hasCover,
 	}
 }
 
-func toIdentifierResponses(ids []domain.Identifier) []dto.IdentifierResponse {
-	resp := make([]dto.IdentifierResponse, len(ids))
+func toAuthors(authors []domain.Author) []dto.Author {
+	resp := make([]dto.Author, len(authors))
+	for i, a := range authors {
+		resp[i] = dto.Author{ID: a.ID, FirstName: a.FirstName, MiddleName: a.MiddleName, LastName: a.LastName, Name: a.Name()}
+	}
+	return resp
+}
+
+func toIdentifiers(ids []domain.Identifier) []dto.Identifier {
+	resp := make([]dto.Identifier, len(ids))
 	for i, id := range ids {
-		resp[i] = dto.IdentifierResponse{Type: id.Type, Value: id.Value}
+		resp[i] = dto.Identifier{Type: id.Type, Value: id.Value}
 	}
 	return resp
 }
 
 func downloadName(b *domain.Book) string {
 	name := b.Title
-	if len(b.Authors) > 0 {
-		name += " - " + strings.Join(b.Authors, ", ")
+	names := make([]string, len(b.Authors))
+	for i, a := range b.Authors {
+		names[i] = a.Name()
+	}
+	if len(names) > 0 {
+		name += " - " + strings.Join(names, ", ")
 	}
 	name = strings.Map(func(r rune) rune {
 		if strings.ContainsRune(invalidFileNameChars, r) || unicode.IsControl(r) {
@@ -419,6 +673,15 @@ func downloadName(b *domain.Book) string {
 		return r
 	}, name)
 	return name + "." + b.Format
+}
+
+func textOf(s *string) string {
+	var text string
+
+	if s != nil {
+		text = *s
+	}
+	return text
 }
 
 func nullIfEmpty(s string) *string {

@@ -38,7 +38,7 @@ func upload(t *testing.T, client *http.Client, url, path string) reply {
 	return decodeReply(t, resp)
 }
 
-func TestBooks_UploadCommitListDownload(t *testing.T) {
+func TestBooks_AddCommitListDownload(t *testing.T) {
 	configPath, baseURL := newConfig(t)
 	link, _ := runApp(t, configPath, "root", "create", "admin")
 	startServer(t, configPath, baseURL)
@@ -47,23 +47,35 @@ func TestBooks_UploadCommitListDownload(t *testing.T) {
 	call(t, client, http.MethodPost, baseURL+"/api/auth/login", map[string]string{"username": "admin", "password": strongPassword})
 	path := testutil.WriteFB2(t, t.TempDir(), "Тихий Дон", "Михаил")
 
-	uploaded := upload(t, client, baseURL+"/api/uploads", path)
+	uploaded := upload(t, client, baseURL+"/api/books", path)
 	require.Equal(t, http.StatusCreated, uploaded.status)
 	id := fmt.Sprint(uploaded.data()["id"])
-	hidden := call(t, client, http.MethodGet, baseURL+"/api/books/"+id, nil)
-	committed := call(t, client, http.MethodPost, baseURL+"/api/uploads/"+id+"/commit", nil)
-	again := upload(t, client, baseURL+"/api/uploads", path)
+	before := call(t, client, http.MethodGet, baseURL+"/api/books?q=дон", nil)
+	committed := call(t, client, http.MethodPost, baseURL+"/api/books/"+id+"/commit", nil)
+	again := upload(t, client, baseURL+"/api/books", path)
 	list := call(t, client, http.MethodGet, baseURL+"/api/books?q=дон", nil)
 	file, err := client.Get(baseURL + "/api/books/1/file")
 	require.NoError(t, err)
 	defer func() { _ = file.Body.Close() }()
 	content, _ := io.ReadAll(file.Body)
 
-	assert.Equal(t, http.StatusNotFound, hidden.status)
+	assert.Equal(t, float64(0), before.body["metadata"].(map[string]any)["total"])
 	assert.Equal(t, http.StatusOK, committed.status)
 	assert.Equal(t, http.StatusConflict, again.status)
 	assert.Equal(t, "BOOK_001", again.data()["code"])
 	assert.Equal(t, float64(1), list.body["metadata"].(map[string]any)["total"])
 	assert.Contains(t, file.Header.Get("Content-Disposition"), "attachment")
 	assert.Contains(t, string(content), "FictionBook")
+
+	edited := call(t, client, http.MethodPut, baseURL+"/api/books/1", map[string]any{
+		"title": "Поднятая целина", "language": "ru", "authors": []map[string]string{{"last_name": "Михаил"}},
+	})
+	deleted := call(t, client, http.MethodDelete, baseURL+"/api/books/1", nil)
+	gone := call(t, client, http.MethodGet, baseURL+"/api/books/1", nil)
+
+	assert.Equal(t, http.StatusOK, edited.status)
+	assert.Equal(t, "Поднятая целина", edited.data()["title"])
+	assert.Empty(t, edited.data()["tags"])
+	assert.Equal(t, http.StatusOK, deleted.status)
+	assert.Equal(t, http.StatusNotFound, gone.status)
 }

@@ -10,14 +10,22 @@ import (
 
 //go:generate go run ../../scripts/gen_sql_queries.go
 
-var ErrConflict = errors.New("conflict")
+var (
+	ErrConflict = errors.New("conflict")
+	ErrInvalid  = errors.New("breaks a rule of the schema")
+)
 
-// turns a UNIQUE violation into ErrConflict; any other error passes through
-func mapConflict(err error) error {
+// a UNIQUE violation becomes ErrConflict and a CHECK or trigger rule ErrInvalid; any other error passes through
+func mapConstraint(err error) error {
 	var sqliteErr *sqlite.Error
 
-	if errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE {
-		return ErrConflict
+	if errors.As(err, &sqliteErr) {
+		switch sqliteErr.Code() {
+		case sqlite3.SQLITE_CONSTRAINT_UNIQUE:
+			err = ErrConflict
+		case sqlite3.SQLITE_CONSTRAINT_CHECK, sqlite3.SQLITE_CONSTRAINT_TRIGGER:
+			err = ErrInvalid
+		}
 	}
 	return err
 }

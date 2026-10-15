@@ -99,7 +99,7 @@ func requirePermission(perm domain.Permission) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			u := r.Context().Value(handler.UserKey{}).(dto.UserResponse)
-			if (&domain.User{Role: u.Role, CanUpload: u.CanUpload, CanEdit: u.CanEdit, CanDelete: u.CanDelete}).Allowed(perm) {
+			if (&domain.User{Role: u.Role, CanAdd: u.CanAdd, CanEdit: u.CanEdit, CanDelete: u.CanDelete}).Allowed(perm) {
 				next.ServeHTTP(w, r)
 			} else {
 				handler.WriteError(w, r, apperrors.Forbidden("permission required: "+string(perm)))

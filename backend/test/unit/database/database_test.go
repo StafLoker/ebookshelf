@@ -50,7 +50,7 @@ func TestDatabase_Trigger_RemovesOnlyUnsharedAuthor(t *testing.T) {
 	db := testutil.OpenTempDB(t)
 	book1 := testutil.InsertBook(t, db, "Один", "h1")
 	book2 := testutil.InsertBook(t, db, "Два", "h2")
-	db.MustExec("INSERT INTO authors (id, name) VALUES (1, 'Общий'), (2, 'Одиночка')")
+	db.MustExec("INSERT INTO authors (id, first_name, middle_name, last_name) VALUES (1, '', '', 'Общий'), (2, '', '', 'Одиночка')")
 	db.MustExec("INSERT INTO book_authors VALUES (?, 1, 0), (?, 2, 1), (?, 1, 0)", book1, book1, book2)
 
 	db.MustExec("DELETE FROM books WHERE id = ?", book1)

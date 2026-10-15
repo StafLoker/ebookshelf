@@ -32,7 +32,7 @@ func TestUser_Allowed(t *testing.T) {
 
 	assert.True(t, admin.Allowed(domain.PermDelete))
 	assert.True(t, flagged.Allowed(domain.PermEdit))
-	assert.False(t, flagged.Allowed(domain.PermUpload))
+	assert.False(t, flagged.Allowed(domain.PermAdd))
 	assert.False(t, plain.Allowed(domain.PermEdit))
 }
 

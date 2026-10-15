@@ -30,7 +30,7 @@ func NewUserRepository(db *sqlx.DB) UserRepository {
 func (r *userRepository) Create(ctx context.Context, user *domain.User) error {
 	result, err := r.db.NamedExecContext(ctx, userCreate, user)
 	if err != nil {
-		return mapConflict(err)
+		return mapConstraint(err)
 	}
 
 	id, err := result.LastInsertId()
@@ -73,15 +73,17 @@ func (r *userRepository) FindAll(ctx context.Context, page, pageSize int) (domai
 		items = []domain.User{}
 	)
 
-	err := r.db.GetContext(ctx, &total, userCount)
-	if err == nil {
-		err = r.db.SelectContext(ctx, &items, userFindAll, pageSize, (page-1)*pageSize)
+	if err := r.db.GetContext(ctx, &total, userCount); err != nil {
+		return domain.Page[domain.User]{}, err
 	}
-	return domain.NewPage(items, page, pageSize, total), err
+	if err := r.db.SelectContext(ctx, &items, userFindAll, pageSize, (page-1)*pageSize); err != nil {
+		return domain.Page[domain.User]{}, err
+	}
+	return domain.NewPage(items, page, pageSize, total), nil
 }
 
 func (r *userRepository) Update(ctx context.Context, user *domain.User) error {
-	result, err := r.db.ExecContext(ctx, userUpdate, user.Role, user.CanUpload, user.CanEdit, user.CanDelete, user.ID)
+	result, err := r.db.ExecContext(ctx, userUpdate, user.Role, user.CanAdd, user.CanEdit, user.CanDelete, user.ID)
 	return requireAffected(result, err)
 }
 

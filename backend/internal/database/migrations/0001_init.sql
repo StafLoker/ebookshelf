@@ -3,7 +3,7 @@ CREATE TABLE users (
   username        TEXT    NOT NULL UNIQUE COLLATE NOCASE,
   password_hash   TEXT    NOT NULL,
   role            TEXT    NOT NULL CHECK (role IN ('root','admin','user')),
-  can_upload      INTEGER NOT NULL DEFAULT 0 CHECK (can_upload IN (0,1)),
+  can_add         INTEGER NOT NULL DEFAULT 0 CHECK (can_add    IN (0,1)),
   can_edit        INTEGER NOT NULL DEFAULT 0 CHECK (can_edit   IN (0,1)),
   can_delete      INTEGER NOT NULL DEFAULT 0 CHECK (can_delete IN (0,1)),
   session_version INTEGER NOT NULL DEFAULT 1   -- bumping it invalidates all of the user's sessions
