@@ -13,6 +13,7 @@ const (
 	AUTH_FORBIDDEN           ErrorCode = "AUTH_010"
 	AUTH_INVALID_TOKEN       ErrorCode = "AUTH_020"
 	AUTH_WEAK_PASSWORD       ErrorCode = "AUTH_021"
+	AUTH_WRONG_PASSWORD      ErrorCode = "AUTH_022"
 	AUTH_USER_NOT_FOUND      ErrorCode = "AUTH_030"
 	AUTH_USERNAME_TAKEN      ErrorCode = "AUTH_031"
 	AUTH_ROOT_EXISTS         ErrorCode = "AUTH_032"
@@ -71,6 +72,10 @@ func InvalidToken(msg string) *AppError {
 
 func WeakPassword(msg string, missing []string) *AppError {
 	return &AppError{Code: AUTH_WEAK_PASSWORD, Message: msg, Details: missing}
+}
+
+func WrongPassword(msg string) *AppError {
+	return &AppError{Code: AUTH_WRONG_PASSWORD, Message: msg}
 }
 
 func UserNotFound(msg string) *AppError {
@@ -139,6 +144,7 @@ var (
 	ErrForbidden          = Forbidden("")
 	ErrInvalidToken       = InvalidToken("")
 	ErrWeakPassword       = WeakPassword("", nil)
+	ErrWrongPassword      = WrongPassword("")
 	ErrUserNotFound       = UserNotFound("")
 	ErrUsernameTaken      = UsernameTaken("")
 	ErrRootExists         = RootExists("")

@@ -47,7 +47,9 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) CheckResetToken(w http.ResponseWriter, r *http.Request) {
-	var req dto.ResetPasswordRequest
+	var req struct {
+		Token string `json:"token"`
+	}
 
 	err := decodeJSON(w, r, &req)
 	if err != nil {

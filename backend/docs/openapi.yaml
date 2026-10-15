@@ -18,6 +18,7 @@ info:
     | AUTH_010 | Forbidden (role or permission missing) |
     | AUTH_020 | Invalid or expired reset token |
     | AUTH_021 | Weak password; `details` lists the missing rules |
+    | AUTH_022 | Wrong current password (change-password) |
     | AUTH_030 | User not found |
     | AUTH_031 | Username already taken |
     | BOOK_001 | Duplicate book; `details.book_id` is the existing one |
@@ -275,7 +276,7 @@ paths:
                     type: string
                     example: Password changed successfully
         "400":
-          description: Invalid request (REQ_001) or weak new password (AUTH_021). The new password is checked after the current one.
+          description: Invalid request (REQ_001), wrong current password (AUTH_022) or weak new password (AUTH_021). The new password is checked after the current one.
           content:
             application/json:
               schema:
@@ -283,19 +284,12 @@ paths:
               examples:
                 invalidRequest:
                   value: {status: error, message: invalid request body, data: {code: REQ_001}}
+                wrongPassword:
+                  value: {status: error, message: current password is wrong, data: {code: AUTH_022}}
                 weakPassword:
                   value: {status: error, message: password does not meet the policy, data: {code: AUTH_021, details: [min_length, uppercase]}}
         "401":
-          description: No valid session (AUTH_002) or wrong current password (AUTH_001)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-              examples:
-                notLoggedIn:
-                  value: {status: error, message: not logged in, data: {code: AUTH_002}}
-                wrongPassword:
-                  value: {status: error, message: current password is wrong, data: {code: AUTH_001}}
+          $ref: "#/components/responses/Unauthenticated"
         "500":
           $ref: "#/components/responses/InternalError"
   /api/users:

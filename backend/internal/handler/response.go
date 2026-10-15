@@ -41,7 +41,7 @@ func statusOf(code apperrors.ErrorCode) int {
 		return http.StatusUnauthorized
 	case apperrors.AUTH_FORBIDDEN:
 		return http.StatusForbidden
-	case apperrors.AUTH_INVALID_TOKEN, apperrors.AUTH_WEAK_PASSWORD, apperrors.REQ_INVALID:
+	case apperrors.AUTH_INVALID_TOKEN, apperrors.AUTH_WEAK_PASSWORD, apperrors.AUTH_WRONG_PASSWORD, apperrors.REQ_INVALID:
 		return http.StatusBadRequest
 	case apperrors.AUTH_USER_NOT_FOUND, apperrors.AUTH_NO_ROOT, apperrors.BOOK_NOT_FOUND, apperrors.REQ_NOT_FOUND:
 		return http.StatusNotFound

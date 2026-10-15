@@ -117,7 +117,7 @@ func TestAuthService_ChangePassword_NewCookie(t *testing.T) {
 	_, errOld := svc.Authenticate(ctx, old.Cookie)
 	user, errNew := svc.Authenticate(ctx, changed.Cookie)
 
-	assert.ErrorIs(t, errWrong, apperrors.ErrInvalidCredentials)
+	assert.ErrorIs(t, errWrong, apperrors.ErrWrongPassword)
 	require.NoError(t, errChange)
 	assert.ErrorIs(t, errOld, apperrors.ErrUnauthenticated)
 	require.NoError(t, errNew)

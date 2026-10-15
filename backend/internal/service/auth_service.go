@@ -124,7 +124,7 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID int64, current,
 	}
 	if !ok {
 		slog.WarnContext(ctx, "change password denied", "user_id", userID)
-		return dto.LoginResponse{}, apperrors.InvalidCredentials("current password is wrong")
+		return dto.LoginResponse{}, apperrors.WrongPassword("current password is wrong")
 	}
 	if missing := domain.MissingPasswordRules(newPassword); len(missing) > 0 {
 		return dto.LoginResponse{}, apperrors.WeakPassword("password does not meet the policy", missing)

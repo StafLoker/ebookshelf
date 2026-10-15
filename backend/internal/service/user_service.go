@@ -31,7 +31,7 @@ func (s *UserService) Create(ctx context.Context, actorID int64, req dto.CreateU
 	if err != nil {
 		return dto.CreateUserResponse{}, err
 	}
-	if actor.Role == domain.RoleUser || req.Role == domain.RoleAdmin && actor.Role != domain.RoleRoot {
+	if req.Role == domain.RoleAdmin && actor.Role != domain.RoleRoot {
 		return dto.CreateUserResponse{}, apperrors.Forbidden("not allowed to create this user")
 	}
 	if !req.Role.IsAssignable() {
