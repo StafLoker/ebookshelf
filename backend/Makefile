@@ -1,4 +1,4 @@
-.PHONY: build test lint format generate-sql
+.PHONY: build test lint format generate-sql apidocs
 
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo unknown)
 LDFLAGS  = -X main.version=$(VERSION)
@@ -17,3 +17,6 @@ lint:
 
 format:
 	@find . -name "*.go" -not -path "./vendor/*" | xargs grep -rL "DO NOT EDIT" | xargs goimports -w
+
+apidocs:
+	@npx @redocly/cli build-docs docs/openapi.yaml --title "Ebookshelf - REST API docs" -o docs/openapi-web.html

@@ -1,0 +1,1852 @@
+openapi: "3.0.3"
+info:
+  title: Ebookshelf - REST API
+  description: |
+    REST API of Ebookshelf, a self-hosted ebook library (EPUB and FB2).
+
+    **Envelope.** Every JSON response is `{status, message, data, metadata}`. `status` is `success` or `error`.
+    `metadata` appears only in paginated lists. In errors, `data` is `{code, details}`.
+
+    **Authentication.** A signed `session` cookie set by `POST /api/auth/login`. There is no token in the body.
+
+    **Error codes.**
+
+    | Code | Meaning |
+    | --- | --- |
+    | AUTH_001 | Invalid credentials |
+    | AUTH_002 | Not authenticated |
+    | AUTH_010 | Forbidden (role or permission missing) |
+    | AUTH_020 | Invalid or expired reset token |
+    | AUTH_021 | Weak password; `details` lists the missing rules |
+    | AUTH_030 | User not found |
+    | AUTH_031 | Username already taken |
+    | BOOK_001 | Duplicate book; `details.book_id` is the existing one |
+    | BOOK_002 | Unsupported format (only epub and fb2) |
+    | BOOK_003 | Unreadable or corrupt file |
+    | BOOK_004 | File too large |
+    | BOOK_005 | Book not found (also for a pending book the caller cannot see) |
+    | META_001 | The metadata could not be written into the file |
+    | REQ_001 | Invalid request |
+    | REQ_002 | Route not found |
+    | REQ_003 | Method not allowed |
+    | INT_001 | Internal error |
+  version: "1.0.0"
+
+tags:
+  - name: Auth
+    description: Login, session and password
+  - name: Users
+    description: User management (admin and root only)
+  - name: Books
+    description: Add, list, read, edit and delete books. A book is `pending` until it is committed to the library.
+
+servers:
+  - url: http://localhost:{port}
+    description: Local server
+    variables:
+      port:
+        default: "7717"
+
+security:
+  - SessionCookie: []
+
+paths:
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in
+      description: Sets the `session` cookie, valid for 30 days.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Logged in. The `session` cookie is set.
+          headers:
+            Set-Cookie:
+              description: "`session=<signed value>; Path=/; HttpOnly; SameSite=Lax`, plus `Secure` when the request is HTTPS (TLS or `X-Forwarded-Proto: https`)"
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, message]
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Login successful
+                  data:
+                    $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Wrong username or password (AUTH_001)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example: {status: error, message: invalid username or password, data: {code: AUTH_001}}
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Log out
+      description: Expires the `session` cookie in the browser. The server does not revoke the session; it stays valid until it expires or the password changes.
+      operationId: logout
+      responses:
+        "200":
+          description: Logged out. The `session` cookie is cleared.
+          headers:
+            Set-Cookie:
+              description: "`session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax`"
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, message]
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Logout successful
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the current user
+      operationId: getCurrentUser
+      responses:
+        "200":
+          description: The user of the session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, message]
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Current user
+                  data:
+                    $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/auth/reset-password/check:
+    post:
+      tags: [Auth]
+      summary: Check a reset token
+      description: Tells whether the reset token is valid. It does not consume the token.
+      operationId: checkResetToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckResetTokenRequest"
+      responses:
+        "200":
+          description: The token is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, message]
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Token is valid
+        "400":
+          description: Invalid request (REQ_001) or invalid or expired token (AUTH_020)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidRequest:
+                  value: {status: error, message: invalid request body, data: {code: REQ_001}}
+                invalidToken:
+                  value: {status: error, message: invalid or expired token, data: {code: AUTH_020}}
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Reset password with a token
+      description: Sets the new password and consumes the token. The password change ends all sessions of the user; no cookie is set.
+      operationId: resetPassword
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordRequest"
+      responses:
+        "200":
+          description: Password reset
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, message]
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Password reset successful
+        "400":
+          description: Invalid request (REQ_001), weak password (AUTH_021) or invalid or expired token (AUTH_020). The password policy is checked before the token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidRequest:
+                  value: {status: error, message: invalid request body, data: {code: REQ_001}}
+                weakPassword:
+                  value: {status: error, message: password does not meet the policy, data: {code: AUTH_021, details: [min_length, uppercase]}}
+                invalidToken:
+                  value: {status: error, message: invalid or expired token, data: {code: AUTH_020}}
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Change password
+      description: Checks the current password, then sets the new one. It ends all other sessions of the user and sets a new `session` cookie for the current one.
+      operationId: changePassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "200":
+          description: Password changed. The `session` cookie is replaced.
+          headers:
+            Set-Cookie:
+              description: "`session=<signed value>; Path=/; HttpOnly; SameSite=Lax`, plus `Secure` when the request is HTTPS"
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, message]
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Password changed successfully
+        "400":
+          description: Invalid request (REQ_001) or weak new password (AUTH_021). The new password is checked after the current one.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidRequest:
+                  value: {status: error, message: invalid request body, data: {code: REQ_001}}
+                weakPassword:
+                  value: {status: error, message: password does not meet the policy, data: {code: AUTH_021, details: [min_length, uppercase]}}
+        "401":
+          description: No valid session (AUTH_002) or wrong current password (AUTH_001)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                notLoggedIn:
+                  value: {status: error, message: not logged in, data: {code: AUTH_002}}
+                wrongPassword:
+                  value: {status: error, message: current password is wrong, data: {code: AUTH_001}}
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/users:
+    get:
+      tags:
+        - Users
+      summary: List users
+      description: Admin or root only. Returns every user, root and admins included, ordered by username.
+      operationId: listUsers
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: Page number, starting at 1. A missing or invalid value falls back to 1.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Items per page. A missing or invalid value falls back to 24, values above 100 are capped at 100.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 24
+      responses:
+        '200':
+          description: Page of users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Users retrieved successfully
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+                  metadata:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: The caller is a plain user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: admin access required
+                data:
+                  code: AUTH_010
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags:
+        - Users
+      summary: Create user
+      description: |
+        Admin or root only. Creates a user with a random password nobody knows and returns a one-time
+        password reset token (valid for 60 minutes) that the new user uses to set their own password
+        through `POST /api/auth/reset-password`.
+
+        Rules:
+        - Root can create admins and users.
+        - An admin can create users only; creating an admin returns 403.
+        - Roles are limited to `admin` and `user`. Root cannot be created through the API.
+        - Omitted permission flags default to `false`.
+        - Unknown JSON fields are rejected with 400.
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+      responses:
+        '201':
+          description: User created, with its reset token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: User created successfully
+                  data:
+                    $ref: '#/components/schemas/UserWithToken'
+        '400':
+          description: Invalid request body, role or username
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalidBody:
+                  summary: Malformed JSON, unknown field or wrong field type
+                  value:
+                    status: error
+                    message: invalid request body
+                    data:
+                      code: REQ_001
+                invalidRole:
+                  summary: Role is root or not a known role
+                  value:
+                    status: error
+                    message: role must be admin or user
+                    data:
+                      code: REQ_001
+                invalidUsername:
+                  summary: Username shorter than 3 or longer than 64 characters, or containing spaces or control characters
+                  value:
+                    status: error
+                    message: username must be 3 to 64 characters without spaces
+                    data:
+                      code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: Caller is a plain user, or an admin trying to create an admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: not allowed to create this user
+                data:
+                  code: AUTH_010
+        '404':
+          description: The caller no longer exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: user not found
+                data:
+                  code: AUTH_030
+        '409':
+          description: Username already taken
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: username already taken
+                data:
+                  code: AUTH_031
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User id
+        schema:
+          type: integer
+          format: int64
+    patch:
+      tags:
+        - Users
+      summary: Update user
+      description: |
+        Admin or root only. Only the fields sent are changed; omitted fields keep their current value.
+
+        Rules:
+        - Root can manage admins and users. Admins can manage plain users only.
+        - Root itself cannot be changed by anyone, through this endpoint.
+        - Only root can change a role, and only to `admin` or `user`. Sending the role a user already has is accepted by anyone who may manage that user.
+        - The request body must be a JSON object, even if empty (`{}`).
+      operationId: updateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+      responses:
+        '200':
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: User updated successfully
+                  data:
+                    $ref: '#/components/schemas/User'
+        '400':
+          description: Invalid id, invalid request body or invalid role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalidId:
+                  summary: Id in the path is not an integer
+                  value:
+                    status: error
+                    message: invalid id
+                    data:
+                      code: REQ_001
+                invalidBody:
+                  summary: Malformed JSON, unknown field or wrong field type
+                  value:
+                    status: error
+                    message: invalid request body
+                    data:
+                      code: REQ_001
+                invalidRole:
+                  summary: Role is root or not a known role
+                  value:
+                    status: error
+                    message: role must be admin or user
+                    data:
+                      code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: Caller is a plain user, is not root when changing a role, or may not manage the target
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                onlyRootChangesRoles:
+                  summary: An admin tried to change a role
+                  value:
+                    status: error
+                    message: only root can change roles
+                    data:
+                      code: AUTH_010
+                notManageable:
+                  summary: Target is root, or an admin when the caller is an admin
+                  value:
+                    status: error
+                    message: not allowed to manage this user
+                    data:
+                      code: AUTH_010
+        '404':
+          description: Target user does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: user not found
+                data:
+                  code: AUTH_030
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags:
+        - Users
+      summary: Delete user
+      description: |
+        Admin or root only, with the same management rules as `PATCH /api/users/{id}`.
+        Root can delete admins and users, admins can delete plain users, nobody can delete root.
+        On success the response carries no `data` field.
+      operationId: deleteUser
+      responses:
+        '200':
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: User deleted successfully
+        '400':
+          description: Id in the path is not an integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: invalid id
+                data:
+                  code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: Caller is a plain user, or may not manage the target
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                adminAccess:
+                  summary: Caller is a plain user
+                  value:
+                    status: error
+                    message: admin access required
+                    data:
+                      code: AUTH_010
+                notManageable:
+                  summary: Target is root, or an admin when the caller is an admin
+                  value:
+                    status: error
+                    message: not allowed to manage this user
+                    data:
+                      code: AUTH_010
+        '404':
+          description: Target user does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: user not found
+                data:
+                  code: AUTH_030
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/users/{id}/reset-token:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User id
+        schema:
+          type: integer
+          format: int64
+    post:
+      tags:
+        - Users
+      summary: Issue password reset token
+      description: |
+        Admin or root only, with the same management rules as `PATCH /api/users/{id}`.
+        Creates a new reset token for the user and returns it in the response body, once.
+        It is valid for 60 minutes and is used with `POST /api/auth/reset-password`.
+        The service does not revoke tokens issued earlier.
+      operationId: issueResetToken
+      responses:
+        '200':
+          description: Reset token issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Reset token issued
+                  data:
+                    $ref: '#/components/schemas/ResetToken'
+        '400':
+          description: Id in the path is not an integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: invalid id
+                data:
+                  code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: Caller is a plain user, or may not manage the target
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                adminAccess:
+                  summary: Caller is a plain user
+                  value:
+                    status: error
+                    message: admin access required
+                    data:
+                      code: AUTH_010
+                notManageable:
+                  summary: Target is root, or an admin when the caller is an admin
+                  value:
+                    status: error
+                    message: not allowed to manage this user
+                    data:
+                      code: AUTH_010
+        '404':
+          description: Target user does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: user not found
+                data:
+                  code: AUTH_030
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/books:
+    post:
+      tags: [Books]
+      operationId: addBook
+      summary: Upload a book
+      description: >-
+        Uploads an EPUB or FB2 file (max 100 MB) as multipart field `file` (the first part must be that field). Metadata and cover are read from the file; the book is created with status pending and must be committed. Needs can_add. A file with the same hash as any existing book is rejected as a duplicate.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: EPUB or FB2 file, at most 100 MB.
+      responses:
+        '201':
+          description: Book stored as pending.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: File uploaded successfully
+                  data:
+                    $ref: '#/components/schemas/Book'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: A book with the same file already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: book already exists
+                data:
+                  code: BOOK_001
+                  details:
+                    book_id: 42
+        '413':
+          description: File exceeds the size limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: file must not exceed 100 MB
+                data:
+                  code: BOOK_004
+        '415':
+          description: Extension is not epub or fb2.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: format "pdf" is not supported
+                data:
+                  code: BOOK_002
+        '422':
+          description: File is corrupt or not a valid book.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: file is corrupt or not a valid book
+                data:
+                  code: BOOK_003
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      tags: [Books]
+      operationId: listBooks
+      summary: List books
+      description: >-
+        Lists the library (status added, default) or pending books, as summaries. Any logged-in user may list the library. Pending books are listed only to their uploader, while admin and root see all of them. `q` is a case-insensitive substring match on title, author name, tag or identifier value (ISBN hyphens ignored). Order: created (default, newest first) or title.
+      parameters:
+      - name: status
+        in: query
+        schema:
+          type: string
+          enum: [added, pending]
+          default: added
+      - name: q
+        in: query
+        description: Free-text search (trimmed).
+        schema:
+          type: string
+      - name: author
+        in: query
+        description: Author id.
+        schema:
+          type: integer
+          format: int64
+      - name: tag
+        in: query
+        description: Tag id.
+        schema:
+          type: integer
+          format: int64
+      - name: language
+        in: query
+        description: Language code, compared lowercased with the stored 2-3 letter code.
+        schema:
+          type: string
+      - name: read
+        in: query
+        description: Filter by the read status of the current user.
+        schema:
+          type: string
+          enum: [read, unread]
+      - name: sort
+        in: query
+        schema:
+          type: string
+          enum: [created, title]
+          default: created
+      - name: page
+        in: query
+        description: Page number; values below 1 become 1.
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: limit
+        in: query
+        description: Page size; invalid or below 1 gives 24, capped at 100.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 24
+      responses:
+        '200':
+          description: Page of books.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Books retrieved successfully
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BookSummary'
+                  metadata:
+                    $ref: '#/components/schemas/Pagination'
+        '400':
+          description: Invalid status, read or sort value, or a non-numeric author or tag id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: status must be added or pending, read must be read or unread and sort must be created or title
+                data:
+                  code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/books/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Book id.
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [Books]
+      operationId: getBook
+      summary: Get a book
+      description: >-
+        Returns the full book with the read flag of the current user. A pending book is visible only to its uploader, admin and root; for anyone else it is 404.
+      responses:
+        '200':
+          description: The book.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Book retrieved successfully
+                  data:
+                    $ref: '#/components/schemas/Book'
+        '400':
+          description: The id is not an integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: invalid id
+                data:
+                  code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: Book not found, or a pending book the caller may not see (only its uploader, admin and root see it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: book not found
+                data:
+                  code: BOOK_005
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [Books]
+      operationId: updateBook
+      summary: Replace book metadata
+      description: >-
+        Replaces ALL editable metadata: a field left out is cleared. Needs can_add when the book is pending (only its uploader, admin or root can reach it), can_edit when it is in the library. The file is rewritten with the new metadata, so its hash changes. A library book needs a title, at least one author with a last name, a one-word first name and a year of 1 to 9999. Unknown JSON fields are rejected; the body is limited to 1 MB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBookRequest'
+      responses:
+        '200':
+          description: Updated book.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Book updated successfully
+                  data:
+                    $ref: '#/components/schemas/Book'
+        '400':
+          description: Invalid JSON body, language, identifier or library rules broken.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: language must be an ISO 639 code
+                data:
+                  code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Book not found, or a pending book the caller may not see (only its uploader, admin and root see it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: book not found
+                data:
+                  code: BOOK_005
+        '409':
+          description: The rewritten file equals another book.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: book already exists
+                data:
+                  code: BOOK_001
+                  details:
+                    book_id: 42
+        '500':
+          description: Failed to write the book file (META_001) or other internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: failed to write the book file
+                data:
+                  code: META_001
+    delete:
+      tags: [Books]
+      operationId: deleteBook
+      summary: Delete a book
+      description: >-
+        Deletes the book, its file and its cover. Needs can_add when the book is pending, can_delete when it is in the library. The response has no data.
+      responses:
+        '200':
+          description: Book deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Book deleted
+        '400':
+          description: The id is not an integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: invalid id
+                data:
+                  code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Book not found, or a pending book the caller may not see (only its uploader, admin and root see it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: book not found
+                data:
+                  code: BOOK_005
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/books/{id}/file:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Book id.
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [Books]
+      operationId: downloadBookFile
+      summary: Download the book file
+      description: >-
+        Downloads the book file as an attachment named `Title - Authors.ext`. Supports Range and conditional requests; the ETag is the file hash. Same visibility as getBook.
+      responses:
+        '200':
+          description: The book file.
+          headers:
+            Content-Disposition:
+              description: Attachment with the download file name.
+              schema:
+                type: string
+                example: attachment; filename="Dune - Frank Herbert.epub"
+            ETag:
+              description: Quoted file hash.
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+                example: private, no-cache
+          content:
+              application/epub+zip:
+                schema:
+                  type: string
+                  format: binary
+              application/x-fictionbook+xml:
+                schema:
+                  type: string
+                  format: binary
+              application/octet-stream:
+                schema:
+                  type: string
+                  format: binary
+        '400':
+          description: The id is not an integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: invalid id
+                data:
+                  code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: Book not found, or a pending book the caller may not see (only its uploader, admin and root see it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: book not found
+                data:
+                  code: BOOK_005
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/books/{id}/cover:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Book id.
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [Books]
+      operationId: getBookCover
+      summary: Get the cover image
+      description: >-
+        Returns the cover image. Same visibility as getBook. 404 when the book has no cover (see has_cover).
+      responses:
+        '200':
+          description: The cover image.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: private, no-cache
+          content:
+              image/jpeg:
+                schema:
+                  type: string
+                  format: binary
+              image/png:
+                schema:
+                  type: string
+                  format: binary
+        '400':
+          description: The id is not an integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: invalid id
+                data:
+                  code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: Book or cover not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: cover not found
+                data:
+                  code: BOOK_005
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [Books]
+      operationId: setBookCover
+      summary: Set the cover image
+      description: >-
+        Replaces the cover with a JPEG or PNG (max 10 MB, multipart field `file`; the format is detected from the content, not the file name). The file is rewritten with the new cover, so its hash changes. The writers only replace an existing cover: a book without one fails with META_001. Needs can_add when the book is pending, can_edit when it is in the library.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: JPEG or PNG image, at most 10 MB.
+      responses:
+        '200':
+          description: Book with the new cover.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Cover updated successfully
+                  data:
+                    $ref: '#/components/schemas/Book'
+        '400':
+          description: Missing file field or unreadable upload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: multipart field "file" with a file is required
+                data:
+                  code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Book not found, or a pending book the caller may not see (only its uploader, admin and root see it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: book not found
+                data:
+                  code: BOOK_005
+        '409':
+          description: The rewritten file equals another book.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: book already exists
+                data:
+                  code: BOOK_001
+                  details:
+                    book_id: 42
+        '413':
+          description: Cover exceeds the size limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: cover must not exceed 10 MB
+                data:
+                  code: BOOK_004
+        '415':
+          description: Cover is not a jpg or png image.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: cover must be a jpg or png image
+                data:
+                  code: BOOK_002
+        '500':
+          description: Failed to write the book file (META_001) or other internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: failed to write the book file
+                data:
+                  code: META_001
+  /api/books/{id}/commit:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Book id.
+        schema:
+          type: integer
+          format: int64
+    post:
+      tags: [Books]
+      operationId: commitBook
+      summary: Add a pending book to the library
+      description: >-
+        Moves a pending book to the library (pending -> added) and resets created_at. Needs can_add. Only the uploader, admin and root can see the pending book. The book must meet the library rules: a title, an author with a last name, a one-word first name, a year of 1 to 9999.
+      responses:
+        '200':
+          description: Book added to the library.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Book added successfully
+                  data:
+                    $ref: '#/components/schemas/Book'
+        '400':
+          description: Invalid id or the book breaks the library rules.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: a book in the library needs a title and an author with a last name; a first name is one word and a year is 1 to 9999
+                data:
+                  code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Pending book not found (also when the book is already in the library).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: pending book not found
+                data:
+                  code: BOOK_005
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/books/{id}/read:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Book id.
+        schema:
+          type: integer
+          format: int64
+    put:
+      tags: [Books]
+      operationId: markBookRead
+      summary: Mark a book as read
+      description: >-
+        Marks a library book as read for the current user. Idempotent. Pending books return 404. The response has no data.
+      responses:
+        '200':
+          description: Marked as read.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Book marked as read
+        '400':
+          description: The id is not an integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: invalid id
+                data:
+                  code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: Book not found, or a pending book the caller may not see (only its uploader, admin and root see it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: book not found
+                data:
+                  code: BOOK_005
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Books]
+      operationId: markBookUnread
+      summary: Mark a book as unread
+      description: >-
+        Removes the read mark of the current user from a library book. Pending books return 404. The response has no data.
+      responses:
+        '200':
+          description: Marked as unread.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Book marked as unread
+        '400':
+          description: The id is not an integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: invalid id
+                data:
+                  code: REQ_001
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: Book not found, or a pending book the caller may not see (only its uploader, admin and root see it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                status: error
+                message: book not found
+                data:
+                  code: BOOK_005
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: session
+      description: Session cookie set by `POST /api/auth/login`
+
+  responses:
+    BadRequest:
+      description: Invalid request (REQ_001)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: {status: error, message: invalid request, data: {code: REQ_001}}
+    Unauthenticated:
+      description: No valid session (AUTH_002)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: {status: error, message: authentication required, data: {code: AUTH_002}}
+    Forbidden:
+      description: The role or permission is missing (AUTH_010)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: {status: error, message: forbidden, data: {code: AUTH_010}}
+    InternalError:
+      description: Internal error (INT_001)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: {status: error, message: internal error, data: {code: INT_001}}
+
+  schemas:
+    Error:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            code:
+              type: string
+              example: REQ_001
+            details:
+              description: Extra data of the error; its shape depends on the code
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 24
+          description: Items per page; default 24, at most 100
+        total:
+          type: integer
+          example: 48
+        totalPages:
+          type: integer
+          example: 2
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          example: admin
+        password:
+          type: string
+          format: password
+    CheckResetTokenRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: Reset token. Only `token` is read; `new_password` is not used here.
+    ResetPasswordRequest:
+      type: object
+      required: [token, new_password]
+      properties:
+        token:
+          type: string
+          description: Single-use reset token
+        new_password:
+          type: string
+          format: password
+          description: At least 12 characters, with uppercase, lowercase, digit and special character
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password:
+          type: string
+          format: password
+        new_password:
+          type: string
+          format: password
+          description: Same policy as `ResetPasswordRequest.new_password`
+    User:
+      type: object
+      description: A user as the API returns it. The password hash is never included.
+      required:
+        - id
+        - username
+        - role
+        - can_add
+        - can_edit
+        - can_delete
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 2
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+          example: alice
+        role:
+          type: string
+          enum: [root, admin, user]
+          example: user
+        can_add:
+          type: boolean
+          description: Lets a plain user add books. Staff (root and admins) always can.
+          example: true
+        can_edit:
+          type: boolean
+          description: Lets a plain user edit books in the library. Staff always can.
+          example: false
+        can_delete:
+          type: boolean
+          description: Lets a plain user delete books in the library. Staff always can.
+          example: false
+    UserCreateRequest:
+      type: object
+      description: Username and role are required. Omitted permission flags default to false.
+      additionalProperties: false
+      required:
+        - username
+        - role
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+          description: 3 to 64 characters, no spaces or control characters.
+          example: alice
+        role:
+          type: string
+          enum: [admin, user]
+          description: Root cannot be assigned through the API.
+          example: user
+        can_add:
+          type: boolean
+          default: false
+        can_edit:
+          type: boolean
+          default: false
+        can_delete:
+          type: boolean
+          default: false
+    UserUpdateRequest:
+      type: object
+      description: Every field is optional. Fields left out keep their current value.
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+          enum: [admin, user]
+          description: Only root can change a role. Root itself cannot be assigned.
+          example: admin
+        can_add:
+          type: boolean
+        can_edit:
+          type: boolean
+        can_delete:
+          type: boolean
+    UserWithToken:
+      type: object
+      description: The created user and its one-time password reset token.
+      required:
+        - user
+        - token
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        token:
+          type: string
+          description: Plain reset token, shown only in this response. Valid for 60 minutes.
+          example: 3f9c2b7e1a4d8f60b2c5e91d7a0f4c88e6b13d2a9f574c1e8d0b6a2f95c3e7d1
+    ResetToken:
+      type: object
+      description: A new password reset token for the user. Valid for 60 minutes, shown only in this response.
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          example: 3f9c2b7e1a4d8f60b2c5e91d7a0f4c88e6b13d2a9f574c1e8d0b6a2f95c3e7d1
+    BookAuthor:
+      type: object
+      description: Author of a book. In a request only the name parts are read.
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Response only; ignored in a request.
+        first_name:
+          type: string
+          description: One word, may be empty.
+        middle_name:
+          type: string
+        last_name:
+          type: string
+          description: Required for a book in the library; a one-word name or nickname goes here.
+        name:
+          type: string
+          description: Display name, response only; ignored in a request.
+          example: Frank Herbert
+    BookAuthorInput:
+      type: object
+      description: Author in an update request. A row with no name is dropped; an author already on the book keeps its stored spelling.
+      properties:
+        first_name:
+          type: string
+          description: One word, no spaces.
+          example: Frank
+        middle_name:
+          type: string
+        last_name:
+          type: string
+          example: Herbert
+    BookIdentifier:
+      type: object
+      required: [type, value]
+      properties:
+        type:
+          type: string
+          description: Scheme, lowercased. uuid and calibre are not kept.
+          example: isbn
+        value:
+          type: string
+          example: '9780441172719'
+    BookSummary:
+      type: object
+      required: [id, title, authors, read]
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        authors:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookAuthor'
+        read:
+          type: boolean
+          description: Read mark of the current user.
+    Book:
+      type: object
+      required: [id, status, read, created_at, title, language, publisher, pub_year, description, format, authors, tags, identifiers, has_cover]
+      properties:
+        id:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [pending, added]
+        read:
+          type: boolean
+          description: Read mark of the current user. Always false on the upload and commit responses.
+        created_at:
+          type: string
+          format: date-time
+          description: Upload time, reset on commit.
+        title:
+          type: string
+        language:
+          type: string
+          nullable: true
+          minLength: 2
+          maxLength: 3
+          description: 2-3 letter ISO 639 code.
+          example: en
+        publisher:
+          type: string
+          nullable: true
+        pub_year:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 9999
+        description:
+          type: string
+          nullable: true
+        format:
+          type: string
+          enum: [epub, fb2]
+        authors:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookAuthor'
+        tags:
+          type: array
+          items:
+            type: string
+        identifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/BookIdentifier'
+        has_cover:
+          type: boolean
+    UpdateBookRequest:
+      type: object
+      description: Replaces ALL metadata; a field left out is cleared (empty string, 0, empty list). Unknown fields are rejected. Max body 1 MB.
+      properties:
+        title:
+          type: string
+          description: Required for a book in the library.
+        language:
+          type: string
+          description: ISO 639 code; stored as the 2-3 letter base. Empty clears it.
+          example: en
+        publisher:
+          type: string
+        pub_year:
+          type: integer
+          minimum: 0
+          maximum: 9999
+          description: 1 to 9999; 0 clears it.
+        description:
+          type: string
+        authors:
+          type: array
+          description: A library book needs at least one author with a last name.
+          items:
+            $ref: '#/components/schemas/BookAuthorInput'
+        tags:
+          type: array
+          description: Spaces collapsed, empty and repeated names dropped.
+          items:
+            type: string
+        identifiers:
+          type: array
+          description: An empty type or value, or a uuid or calibre type, is rejected with 400.
+          items:
+            $ref: '#/components/schemas/BookIdentifier'
